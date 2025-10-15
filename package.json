@@ -1,0 +1,28 @@
+{
+  "name": "chat-room",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "node --env-file=.env --watch server.js",
+    "start": "node --env-file=.env --watch server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amjadcp/CHAT-ROOM.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/amjadcp/CHAT-ROOM/issues"
+  },
+  "homepage": "https://github.com/amjadcp/CHAT-ROOM#readme",
+  "description": "",
+  "dependencies": {
+    "ejs": "^3.1.10",
+    "express": "^5.1.0",
+    "mongoose": "^8.19.1",
+    "socket.io": "^4.8.1"
+  }
+}

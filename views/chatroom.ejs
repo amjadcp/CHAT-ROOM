@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Audio Chat</title>
+  <style>
+    .engaged {
+      font-weight: bold;
+      color: red;
+    }
+  </style>
+</head>
+<body>
+  <h2>Welcome, <%= username %></h2>
+  <button id="releaseMicBtn" disabled>Release Mic</button>
+
+  <ul id="usersList">
+    <% users.forEach(u => { %>
+      <li data-userid="<%= u._id %>">
+        <%= u.name %>
+        <button class="micBtn">🎤</button>
+        <span class="status"><%= u.engagedWith ? 'Engaged' : 'Available' %></span>
+      </li>
+    <% }) %>
+  </ul>
+
+  <script>
+    // Pass currentUserId from server to client
+    const currentUserId = '<%= userId %>';
+  </script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/client.js"></script>
+</body>
+</html>
