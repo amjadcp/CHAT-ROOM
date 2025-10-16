@@ -12,6 +12,7 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Connect to MongoDB with options enabling newer connection behavior
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true
@@ -19,20 +20,17 @@ mongoose.connect(process.env.MONGO_URI, {
 
 const UserSchema = new mongoose.Schema({
   name: String,
-  engagedWith: { type: String, default: null }
+  engagedWith: { type: String, default: null },
+  lastSeen: { type: Date, default: Date.now }  // Track last activity time
 });
 const User = mongoose.model('User', UserSchema);
 
+// Serve home page
 app.get('/', async (req, res) => {
-  let username = `User${Math.floor(Math.random() * 1000)}`;
-  let user = new User({ name: username });
-  await user.save();
-
-  let users = await User.find();
-  res.render('chatroom', { userId: user._id.toString(), username, users });
+  res.render('chatroom');
 });
 
-// Broadcast updated user list to all users in mainRoom
+// Broadcast updated user list to 'mainRoom'
 async function broadcastUserList() {
   try {
     const users = await User.find();
@@ -42,25 +40,67 @@ async function broadcastUserList() {
   }
 }
 
+// Periodic cleanup of stale users (e.g. no activity >5 minutes)
+setInterval(async () => {
+  try {
+    const cutoff = new Date(Date.now() - 5 * 60 * 1000);
+    await User.deleteMany({ lastSeen: { $lt: cutoff } });
+    await broadcastUserList();
+  } catch (e) {
+    console.error('Error cleaning stale users:', e);
+  }
+}, 60 * 1000); // Run every 1 minute
+
 io.on('connection', (socket) => {
   let currentUserId = null;
 
-  socket.on('join', async (userId) => {
-    currentUserId = userId;
+  socket.on('join', async () => {
+    const username = `User${Math.floor(Math.random() * 1000)}`;
+    const user = new User({ name: username });
+    await user.save();
+    currentUserId = user._id.toString();
+    
+    socket.emit('userCreated', currentUserId, user.name);
     socket.join('mainRoom');
     socket.join(currentUserId);
-    await broadcastUserList(); // Broadcast updated user list when a user joins
+
+    // Update lastSeen on join
+    await User.findByIdAndUpdate(currentUserId, { lastSeen: new Date() });
+    await broadcastUserList();
+  });
+
+  socket.on('rejoin', async (userId) => {
+    let user = await User.findById(userId);
+    if (!user) {
+      // If user doesn't exist, create new user
+      const username = `User${Math.floor(Math.random() * 1000)}`;
+      user = new User({ name: username });
+      await user.save();
+
+      socket.emit('userCreated', user._id.toString(), user.name);
+    }
+    currentUserId = user._id.toString();
+    
+    socket.join('mainRoom');
+    socket.join(currentUserId);
+
+    // Update lastSeen on join
+    await User.findByIdAndUpdate(currentUserId, { lastSeen: new Date() });
+    await broadcastUserList();
   });
 
   socket.on('toggleMic', async (targetUserId) => {
     if (!currentUserId) return;
-
     let currentUser = await User.findById(currentUserId);
     let targetUser = await User.findById(targetUserId);
+    if (!currentUser || !targetUser) return;
 
+    // Only engage if both free
     if (!currentUser.engagedWith && !targetUser.engagedWith) {
       currentUser.engagedWith = targetUserId;
       targetUser.engagedWith = currentUserId;
+      currentUser.lastSeen = new Date();
+      targetUser.lastSeen = new Date();
 
       await currentUser.save();
       await targetUser.save();
@@ -71,32 +111,35 @@ io.on('connection', (socket) => {
       io.in('mainRoom').emit('statusUpdate', { userId: currentUserId, engagedWith: targetUserId });
       io.in('mainRoom').emit('statusUpdate', { userId: targetUserId, engagedWith: currentUserId });
 
-      await broadcastUserList(); // Update user list after engagement change
+      await broadcastUserList();
     }
   });
 
   socket.on('releaseMic', async () => {
     if (!currentUserId) return;
-
     let currentUser = await User.findById(currentUserId);
-    if (!currentUser.engagedWith) return;
+    if (!currentUser || !currentUser.engagedWith) return;
 
     let otherUserId = currentUser.engagedWith;
     let otherUser = await User.findById(otherUserId);
 
-    currentUser.engagedWith = null;
-    otherUser.engagedWith = null;
+    if (otherUser) {
+      otherUser.engagedWith = null;
+      otherUser.lastSeen = new Date();
+      await otherUser.save();
 
+      io.to(otherUserId).emit('micReleased');
+      io.in('mainRoom').emit('statusUpdate', { userId: otherUserId, engagedWith: null });
+    }
+
+    currentUser.engagedWith = null;
+    currentUser.lastSeen = new Date();
     await currentUser.save();
-    await otherUser.save();
 
     io.to(currentUserId).emit('micReleased');
-    io.to(otherUserId).emit('micReleased');
-
     io.in('mainRoom').emit('statusUpdate', { userId: currentUserId, engagedWith: null });
-    io.in('mainRoom').emit('statusUpdate', { userId: otherUserId, engagedWith: null });
 
-    await broadcastUserList(); // Update user list after release
+    await broadcastUserList();
   });
 
   socket.on('webrtcOffer', ({ targetUserId, offer }) => {
@@ -115,28 +158,33 @@ io.on('connection', (socket) => {
     if (!currentUserId) return;
 
     let currentUser = await User.findById(currentUserId);
-    if (currentUser && currentUser.engagedWith) {
+    if (currentUser) {
       let otherUserId = currentUser.engagedWith;
-      let otherUser = await User.findById(otherUserId);
-      if (otherUser) {
-        otherUser.engagedWith = null;
-        await otherUser.save();
-        io.to(otherUserId).emit('micReleased');
-        io.in('mainRoom').emit('statusUpdate', { userId: otherUserId, engagedWith: null });
-      }
       currentUser.engagedWith = null;
+      currentUser.lastSeen = new Date();
       await currentUser.save();
+
+      if (otherUserId) {
+        let otherUser = await User.findById(otherUserId);
+        if (otherUser) {
+          otherUser.engagedWith = null;
+          otherUser.lastSeen = new Date();
+          await otherUser.save();
+          io.to(otherUserId).emit('micReleased');
+          io.in('mainRoom').emit('statusUpdate', { userId: otherUserId, engagedWith: null });
+        }
+      }
+
+      // Instead of immediate delete, mark user as inactive or delete after timeout in cleanup job
+      await User.findByIdAndDelete(currentUserId);
     }
 
-    // Optional: Remove user from DB on disconnect or comment out if persistence preferred
-    await User.findByIdAndDelete(currentUserId);
-
     io.in('mainRoom').emit('statusUpdate', { userId: currentUserId, engagedWith: null });
-    await broadcastUserList();  // Broadcast user list after disconnect
+    await broadcastUserList();
   });
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });

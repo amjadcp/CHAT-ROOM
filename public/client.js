@@ -1,18 +1,45 @@
 const socket = io();
 let connectedUserId = null;
 const usersList = document.getElementById('usersList');
+const userName = document.getElementById('username');
 const releaseMicBtn = document.getElementById('releaseMicBtn');
 
 let localStream = null;
 let pc = null;
+
 let isMakingOffer = false;
 let isIgnoringOffer = false;
-const polite = true;  // Set polite to true to handle negotiation collisions properly
+const polite = true;
 let pendingCandidates = [];
 
-socket.emit('join', currentUserId);
+const iceServersConfig = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { 
+      urls: 'turn:your.turn.server:3478', 
+      username: 'user', 
+      credential: 'pass' 
+    }
+  ]
+};
 
-// Handle releasing mic button
+let currentUserId = localStorage.getItem('userId');
+let currentUserName = localStorage.getItem('userName');
+
+if (currentUserId) {
+  socket.emit('rejoin', currentUserId);
+} else {
+  socket.emit('join');
+  socket.on('userCreated', (userId, userName) => {
+    console.log(userId, userName, "----------");
+    
+    localStorage.setItem('userId', userId);
+    localStorage.setItem('userName', userName);
+    currentUserId = userId;
+    currentUserName = userName;
+  });
+}
+
 releaseMicBtn.addEventListener('click', () => {
   if (connectedUserId) {
     socket.emit('releaseMic');
@@ -20,25 +47,19 @@ releaseMicBtn.addEventListener('click', () => {
   }
 });
 
-// Render or update user list dynamically based on server update
 socket.on('userListUpdate', (users) => {
-  usersList.innerHTML = '';  // Clear existing list
-
+  userName.innerText = `Welcome, ${currentUserName}`
+  usersList.innerHTML = '';
   users.forEach(u => {
     const li = document.createElement('li');
     li.setAttribute('data-userid', u._id);
-
-    // User name text
     li.appendChild(document.createTextNode(u.name + ' '));
 
-    // Mic button
     const micBtn = document.createElement('button');
     micBtn.textContent = '🎤';
     micBtn.className = 'micBtn';
 
-    // Disable mic if user is engaged, self, or already engaged with someone else
     micBtn.disabled = !!connectedUserId || u.engagedWith !== null || u._id === currentUserId;
-
     micBtn.onclick = () => {
       if (connectedUserId) return alert('Already engaged in a conversation.');
       if (u.engagedWith) return alert('User is engaged.');
@@ -48,33 +69,25 @@ socket.on('userListUpdate', (users) => {
 
     li.appendChild(micBtn);
 
-    // Status span
     const statusSpan = document.createElement('span');
     statusSpan.className = 'status';
     statusSpan.textContent = u.engagedWith ? 'Engaged' : 'Available';
-    if (u.engagedWith) {
-      li.classList.add('engaged');
-    }
-
+    if (u.engagedWith) li.classList.add('engaged');
     li.appendChild(statusSpan);
 
     usersList.appendChild(li);
   });
 });
 
-// Handle when mic toggled (engaged)
 socket.on('micToggled', async ({ engagedWith }) => {
   connectedUserId = engagedWith;
   releaseMicBtn.disabled = false;
   await startWebRTC(engagedWith);
 });
 
-// Handle when mic released
 socket.on('micReleased', () => {
   cleanupConnection();
 });
-
-// WebRTC helper functions
 
 async function startLocalStream() {
   if (!localStream) {
@@ -87,24 +100,21 @@ async function startLocalStream() {
 }
 
 function createPeerConnection() {
-  pc = new RTCPeerConnection({
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' }, // Google STUN server
-      // You can add TURN servers here for better NAT traversal in production
-    ]
-  });
+  if (pc) return;
+
+  pc = new RTCPeerConnection(iceServersConfig);
 
   if (localStream) {
     localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
   }
 
-  pc.onicecandidate = event => {
+  pc.onicecandidate = (event) => {
     if (event.candidate) {
       socket.emit('webrtcCandidate', { targetUserId: connectedUserId, candidate: event.candidate });
     }
   };
 
-  pc.ontrack = event => {
+  pc.ontrack = (event) => {
     let remoteAudio = document.getElementById('remoteAudio');
     if (!remoteAudio) {
       remoteAudio = document.createElement('audio');
@@ -117,22 +127,27 @@ function createPeerConnection() {
 
   pc.onnegotiationneeded = async () => {
     if (isMakingOffer) return;
-
     try {
       isMakingOffer = true;
-      const offer = await pc.createOffer();
-      if (pc.signalingState !== 'stable') return;
-      await pc.setLocalDescription(offer);
-      socket.emit('webrtcOffer', { targetUserId: connectedUserId, offer: pc.localDescription });
+      await pc.setLocalDescription(await pc.createOffer());
+      // Only send if signaling state is stable
+      if (pc.signalingState === 'stable') {
+        socket.emit('webrtcOffer', { targetUserId: connectedUserId, offer: pc.localDescription });
+      }
     } catch (err) {
-      console.error('Error during negotiationneeded', err);
+      console.error('Error during negotiation:', err);
     } finally {
       isMakingOffer = false;
     }
   };
+
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+      cleanupConnection();
+    }
+  };
 }
 
-// Override setting remote description with buffering ICE candidate support
 async function setRemoteDesc(desc) {
   await pc.setRemoteDescription(desc);
   for (let candidate of pendingCandidates) {
@@ -153,8 +168,7 @@ async function startWebRTC(targetUserId) {
 
   try {
     isMakingOffer = true;
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+    await pc.setLocalDescription(await pc.createOffer());
     socket.emit('webrtcOffer', { targetUserId, offer: pc.localDescription });
   } catch (err) {
     console.error('Error creating offer:', err);
@@ -166,12 +180,10 @@ async function startWebRTC(targetUserId) {
 socket.on('webrtcOffer', async ({ fromUserId, offer }) => {
   const offerCollision = isMakingOffer || pc?.signalingState !== 'stable';
   isIgnoringOffer = !polite && offerCollision;
-  if (isIgnoringOffer) {
-    console.log('Ignoring offer due to collision');
-    return;
-  }
+  if (isIgnoringOffer) return;
 
   connectedUserId = fromUserId;
+
   await startLocalStream();
   createPeerConnection();
 
@@ -189,7 +201,7 @@ socket.on('webrtcAnswer', async ({ answer }) => {
   try {
     await pc.setRemoteDescription(new RTCSessionDescription(answer));
   } catch (err) {
-    console.error('Error setting remote description for answer:', err);
+    console.error('Error setting remote description:', err);
   }
 });
 
@@ -212,7 +224,7 @@ function cleanupConnection() {
     pc = null;
   }
   if (localStream) {
-    localStream.getTracks().forEach(track => track.stop());
+    localStream.getTracks().forEach(t => t.stop());
     localStream = null;
   }
   connectedUserId = null;
