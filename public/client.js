@@ -7,19 +7,18 @@ const releaseMicBtn = document.getElementById('releaseMicBtn');
 let localStream = null;
 let pc = null;
 
+// Perfect negotiation state flags
 let isMakingOffer = false;
 let isIgnoringOffer = false;
+
+// Assign roles for glare handling, true means polite peer
 const polite = true;
+
 let pendingCandidates = [];
 
 const iceServersConfig = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { 
-      urls: 'turn:your.turn.server:3478', 
-      username: 'user', 
-      credential: 'pass' 
-    }
   ]
 };
 
@@ -46,7 +45,7 @@ releaseMicBtn.addEventListener('click', () => {
 });
 
 socket.on('userListUpdate', (users) => {
-  userName.innerText = `Welcome, ${currentUserName}`
+  userName.innerText = `Welcome, ${currentUserName}`;
   usersList.innerHTML = '';
   users.forEach(u => {
     const li = document.createElement('li');
@@ -59,9 +58,15 @@ socket.on('userListUpdate', (users) => {
 
     micBtn.disabled = !!connectedUserId || u.engagedWith !== null || u._id === currentUserId;
     micBtn.onclick = () => {
-      if (connectedUserId) return alert('Already engaged in a conversation.');
-      if (u.engagedWith) return alert('User is engaged.');
-      if (u._id === currentUserId) return alert('Cannot talk to yourself.');
+      if (connectedUserId) {
+        return alert('Already engaged in a conversation.');
+      }
+      if (u.engagedWith) {
+        return alert('User is engaged.');
+      }
+      if (u._id === currentUserId) {
+        return alert('Cannot talk to yourself.');
+      }
       socket.emit('toggleMic', u._id);
     };
 
@@ -123,12 +128,11 @@ function createPeerConnection() {
     remoteAudio.srcObject = event.streams[0];
   };
 
+  // Perfect negotiation pattern handler
   pc.onnegotiationneeded = async () => {
-    if (isMakingOffer) return;
     try {
       isMakingOffer = true;
       await pc.setLocalDescription(await pc.createOffer());
-      // Only send if signaling state is stable
       if (pc.signalingState === 'stable') {
         socket.emit('webrtcOffer', { targetUserId: connectedUserId, offer: pc.localDescription });
       }
@@ -147,17 +151,26 @@ function createPeerConnection() {
 }
 
 async function setRemoteDesc(desc) {
-  await pc.setRemoteDescription(desc);
-  for (let candidate of pendingCandidates) {
-    try {
-      await pc.addIceCandidate(candidate);
-    } catch (e) {
-      if (!e.toString().includes('RTCIceCandidate')) {
-        console.error('Failed to add ICE candidate:', e);
+  try {
+    // Handle rollback if necessary per perfect negotiation spec
+    if (desc.type === 'offer' && (pc.signalingState !== 'stable')) {
+      await pc.setRemoteDescription({ type: 'rollback' });
+    }
+    await pc.setRemoteDescription(desc);
+
+    for (let candidate of pendingCandidates) {
+      try {
+        await pc.addIceCandidate(candidate);
+      } catch (e) {
+        if (!e.toString().includes('RTCIceCandidate')) {
+          console.error('Failed to add ICE candidate:', e);
+        }
       }
     }
+    pendingCandidates = [];
+  } catch (err) {
+    console.error('Failed setting remote description:', err);
   }
-  pendingCandidates = [];
 }
 
 async function startWebRTC(targetUserId) {
@@ -173,6 +186,17 @@ async function startWebRTC(targetUserId) {
   } finally {
     isMakingOffer = false;
   }
+}
+
+function candidateMatchesSDP(candidate) {
+  const sdp = pc.remoteDescription?.sdp;
+  if (!sdp) return false;
+
+  const match = /a=ice-ufrag:(\S+)/.exec(sdp);
+  if (!match) return false;
+  const ufrag = match[1];
+
+  return candidate.usernameFragment === ufrag;
 }
 
 socket.on('webrtcOffer', async ({ fromUserId, offer }) => {
@@ -206,13 +230,15 @@ socket.on('webrtcAnswer', async ({ answer }) => {
 socket.on('webrtcCandidate', async ({ candidate }) => {
   try {
     const iceCandidate = new RTCIceCandidate(candidate);
-    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+    if (pc && pc.remoteDescription && pc.remoteDescription.type && candidateMatchesSDP(iceCandidate)) {
       await pc.addIceCandidate(iceCandidate);
     } else {
       pendingCandidates.push(iceCandidate);
     }
   } catch (err) {
-    console.error('Error adding ICE candidate:', err);
+    if (!err.message.includes('Unknown ufrag')) {
+      console.error('Error adding ICE candidate:', err);
+    }
   }
 });
 
