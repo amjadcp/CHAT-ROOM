@@ -30,15 +30,13 @@ if (currentUserId) {
   socket.emit('rejoin', currentUserId);
 } else {
   socket.emit('join');
-  socket.on('userCreated', (userId, userName) => {
-    console.log(userId, userName, "----------");
-    
-    localStorage.setItem('userId', userId);
-    localStorage.setItem('userName', userName);
-    currentUserId = userId;
-    currentUserName = userName;
-  });
 }
+socket.on('userCreated', (userId, userName) => {
+  localStorage.setItem('userId', userId);
+  localStorage.setItem('userName', userName);
+  currentUserId = userId;
+  currentUserName = userName;
+});
 
 releaseMicBtn.addEventListener('click', () => {
   if (connectedUserId) {

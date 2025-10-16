@@ -76,7 +76,7 @@ io.on('connection', (socket) => {
       const username = `User${Math.floor(Math.random() * 1000)}`;
       user = new User({ name: username });
       await user.save();
-
+      
       socket.emit('userCreated', user._id.toString(), user.name);
     }
     currentUserId = user._id.toString();
