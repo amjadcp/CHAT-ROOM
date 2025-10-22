@@ -1,22 +1,21 @@
 <!DOCTYPE html>
 <html>
-<head>
-  <title>Audio Chat</title>
-  <style>
-    .engaged {
-      font-weight: bold;
-      color: red;
-    }
-  </style>
-</head>
-<body>
-  <h2 id="username"></h2>
-  <button id="releaseMicBtn" disabled>Release Mic</button>
+  <head>
+    <title>Audio Chat</title>
+    <style>
+      .engaged {
+        font-weight: bold;
+        color: red;
+      }
+    </style>
+  </head>
+  <body>
+    <h2 id="username"></h2>
+    <button id="releaseMicBtn" disabled>Release Mic</button>
+    <ul id="usersList"></ul>
+    <audio id="remoteAudio" autoplay="true"></audio>
 
-  <ul id="usersList">
-  </ul>
-
-  <script src="/socket.io/socket.io.js"></script>
-  <script src="/client.js"></script>
-</body>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/client.js"></script>
+  </body>
 </html>
