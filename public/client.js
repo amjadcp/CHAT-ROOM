@@ -8,6 +8,7 @@ let localStream = null;
 let pc = null;
 let pendingCandidates = [];
 let isLocalMicEnabled = false;
+let userMicStates = {};
 
 // ==== UI Elements ====
 const usersList = document.getElementById("usersList");
@@ -50,6 +51,7 @@ function setupSocketHandlers() {
   socket.on("userListUpdate", renderUserList);
   socket.on("micToggled", handleConnectionRequested);
   socket.on("micReleased", handleConnectionReleased);
+  socket.on("micStateChanged", handleMicStateChanged);
 
   socket.on("webrtcOffer", handleOffer);
   socket.on("webrtcAnswer", handleAnswer);
@@ -82,6 +84,9 @@ async function enableLocalMicrophone() {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     isLocalMicEnabled = true;
+    socket.emit("micStateChanged", { userId: currentUserId, micOn: true });
+    userMicStates[currentUserId] = true;
+    updateMicStatusInList(currentUserId, true);
     updateLocalMicButton();
 
     // If peer connection exists, add audio track(s) and trigger renegotiation
@@ -128,6 +133,9 @@ function disableLocalMicrophone() {
     localStream = null;
   }
   isLocalMicEnabled = false;
+  socket.emit("micStateChanged", { userId: currentUserId, micOn: false });
+  userMicStates[currentUserId] = false;
+  updateMicStatusInList(currentUserId, false);
   updateLocalMicButton();
 }
 
@@ -156,14 +164,34 @@ function renderUserList(users) {
     const connectBtn = createConnectButton(u);
     li.appendChild(connectBtn);
 
+    // Status (engaged / available)
     const statusSpan = document.createElement("span");
     statusSpan.className = "status";
     statusSpan.textContent = u.engagedWith ? "Engaged" : "Available";
     if (u.engagedWith) li.classList.add("engaged");
     li.appendChild(statusSpan);
 
+    // Mic status (ON/OFF)
+    const micSpan = document.createElement("span");
+    micSpan.className = "micStatus";
+
+    const micOn = userMicStates[u._id] ?? false;
+    if (u.engagedWith) {
+      micSpan.textContent = micOn ? "🎤 Mic ON" : "🔇 Mic OFF";
+      micSpan.classList.toggle("activeMic", micOn);
+      micSpan.classList.toggle("inactiveMic", !micOn);
+    } else {
+      // If not engaged, hide mic info
+      micSpan.textContent = "";
+      micSpan.classList.remove("activeMic", "inactiveMic");
+    }
+
+    li.appendChild(micSpan);
     usersList.appendChild(li);
   });
+
+  // Update current user's mic state display if desired
+  updateMicStatusInList(currentUserId, userMicStates[currentUserId] ?? false);
 }
 
 function createConnectButton(user) {
@@ -192,6 +220,23 @@ function createConnectButton(user) {
   return btn;
 }
 
+function updateMicStatusInList(userId, micOn) {
+  const li = usersList.querySelector(`li[data-userid='${userId}']`);
+  if (!li) return;
+
+  let micSpan = li.querySelector(".micStatus");
+  if (!micSpan) {
+    micSpan = document.createElement("span");
+    micSpan.className = "micStatus";
+    li.appendChild(micSpan);
+  }
+
+  // Update text and classes
+  micSpan.textContent = micOn ? "🎤 Mic ON" : "🔇 Mic OFF";
+  micSpan.classList.toggle("activeMic", micOn);
+  micSpan.classList.toggle("inactiveMic", !micOn);
+}
+
 // ========================
 // 🔹 SOCKET EVENT LOGIC
 // ========================
@@ -216,6 +261,12 @@ async function handleConnectionRequested({ engagedWith }) {
 function handleConnectionReleased() {
   console.log("Connection released");
   cleanupConnection();
+}
+
+function handleMicStateChanged({ userId, micOn }) {
+  console.log("Mic state changed:", userId, micOn);
+  userMicStates[userId] = micOn;
+  updateMicStatusInList(userId, micOn);
 }
 
 // ========================
