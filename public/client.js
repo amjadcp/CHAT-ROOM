@@ -1,17 +1,19 @@
 const socket = io();
 
 // ==== Global State ====
-let currentUserId = localStorage.getItem("userId");
-let currentUserName = localStorage.getItem("userName");
+let currentUserId = null;
+let currentUserName = null;
 let connectedUserId = null;
 let localStream = null;
 let pc = null;
 let pendingCandidates = [];
+let isLocalMicEnabled = false;
 
 // ==== UI Elements ====
 const usersList = document.getElementById("usersList");
 const userNameEl = document.getElementById("username");
-const releaseMicBtn = document.getElementById("releaseMicBtn");
+const disconnect = document.getElementById("disconnect");
+const toggleLocalMicBtn = document.getElementById("toggleLocalMicBtn");
 const remoteAudio = document.getElementById("remoteAudio");
 
 // ==== ICE Config ====
@@ -24,20 +26,16 @@ const iceServersConfig = {
 };
 
 // ==== Flags for negotiation ====
-const polite = true;
+let polite = false;
 let isMakingOffer = false;
 let isIgnoringOffer = false;
+let isSettingRemoteAnswerPending = false;
 
 // ========================
 // 🔹 INITIALIZATION
 // ========================
 function init() {
-  if (currentUserId) {
-    socket.emit("rejoin", currentUserId);
-  } else {
-    socket.emit("join");
-  }
-
+  socket.emit("join");
   setupSocketHandlers();
   setupUIHandlers();
 }
@@ -50,8 +48,8 @@ init();
 function setupSocketHandlers() {
   socket.on("userCreated", handleUserCreated);
   socket.on("userListUpdate", renderUserList);
-  socket.on("micToggled", handleMicToggled);
-  socket.on("micReleased", handleMicReleased);
+  socket.on("micToggled", handleConnectionRequested);
+  socket.on("micReleased", handleConnectionReleased);
 
   socket.on("webrtcOffer", handleOffer);
   socket.on("webrtcAnswer", handleAnswer);
@@ -62,7 +60,17 @@ function setupSocketHandlers() {
 // 🔹 UI HANDLERS
 // ========================
 function setupUIHandlers() {
-  releaseMicBtn.addEventListener("click", () => {
+  // Toggle local microphone
+  toggleLocalMicBtn.addEventListener("click", async () => {
+    if (!isLocalMicEnabled) {
+      await enableLocalMicrophone();
+    } else {
+      disableLocalMicrophone();
+    }
+  });
+
+  // Release/disconnect from current conversation
+  disconnect.addEventListener("click", () => {
     if (connectedUserId) {
       socket.emit("releaseMic");
       cleanupConnection();
@@ -70,17 +78,68 @@ function setupUIHandlers() {
   });
 }
 
+async function enableLocalMicrophone() {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    isLocalMicEnabled = true;
+    updateLocalMicButton();
+    
+    // If already in a call, add the track to existing peer connection
+    if (pc && connectedUserId) {
+      localStream.getTracks().forEach((track) => {
+        pc.addTrack(track, localStream);
+      });
+    }
+  } catch (err) {
+    alert("Microphone access denied or error: " + err.message);
+    console.error("Mic error:", err);
+  }
+}
+
+function disableLocalMicrophone() {
+  if (localStream) {
+    localStream.getTracks().forEach((track) => track.stop());
+    
+    // Remove tracks from peer connection if active
+    if (pc) {
+      const senders = pc.getSenders();
+      senders.forEach(sender => {
+        if (sender.track && sender.track.kind === 'audio') {
+          pc.removeTrack(sender);
+        }
+      });
+    }
+    
+    localStream = null;
+  }
+  isLocalMicEnabled = false;
+  updateLocalMicButton();
+}
+
+function updateLocalMicButton() {
+  if (isLocalMicEnabled) {
+    toggleLocalMicBtn.textContent = "🎤 Mute";
+    toggleLocalMicBtn.classList.add("active");
+  } else {
+    toggleLocalMicBtn.textContent = "🎤 Unmute";
+    toggleLocalMicBtn.classList.remove("active");
+  }
+}
+
 function renderUserList(users) {
   userNameEl.innerText = `Welcome, ${currentUserName}`;
   usersList.innerHTML = "";
 
   users.forEach((u) => {
+    // Skip rendering current user
+    if (u._id === currentUserId) return;
+
     const li = document.createElement("li");
     li.setAttribute("data-userid", u._id);
     li.textContent = `${u.name} `;
 
-    const micBtn = createMicButton(u);
-    li.appendChild(micBtn);
+    const connectBtn = createConnectButton(u);
+    li.appendChild(connectBtn);
 
     const statusSpan = document.createElement("span");
     statusSpan.className = "status";
@@ -92,20 +151,26 @@ function renderUserList(users) {
   });
 }
 
-function createMicButton(user) {
+function createConnectButton(user) {
   const btn = document.createElement("button");
-  btn.textContent = "🎤";
-  btn.className = "micBtn";
+  btn.textContent = "Connect";
+  btn.className = "connectBtn";
 
-  btn.disabled =
-    !!connectedUserId ||
-    user.engagedWith !== null ||
-    user._id === currentUserId;
+  btn.disabled = !!connectedUserId || user.engagedWith !== null;
+  
   btn.onclick = () => {
-    if (connectedUserId) return alert("Already engaged in a conversation.");
-    if (user.engagedWith) return alert("User is engaged.");
-    if (user._id === currentUserId) return alert("Cannot talk to yourself.");
+    console.log("Connect button clicked for user:", user._id);
+    
+    if (connectedUserId) {
+      alert("Already engaged in a conversation.");
+      return;
+    }
+    if (user.engagedWith) {
+      alert("User is engaged.");
+      return;
+    }
 
+    console.log("Emitting toggleMic to:", user._id);
     socket.emit("toggleMic", user._id);
   };
 
@@ -116,19 +181,25 @@ function createMicButton(user) {
 // 🔹 SOCKET EVENT LOGIC
 // ========================
 function handleUserCreated(userId, name) {
-  localStorage.setItem("userId", userId);
-  localStorage.setItem("userName", name);
+  console.log("User created:", userId, name);
   currentUserId = userId;
   currentUserName = name;
 }
 
-async function handleMicToggled({ engagedWith }) {
+async function handleConnectionRequested({ engagedWith }) {
+  console.log("Connection requested with:", engagedWith);
   connectedUserId = engagedWith;
-  releaseMicBtn.disabled = false;
+  disconnect.disabled = false;
+  
+  // Determine who is polite based on user IDs
+  polite = currentUserId < engagedWith;
+  console.log("Polite role:", polite);
+  
   await startCall(engagedWith);
 }
 
-function handleMicReleased() {
+function handleConnectionReleased() {
+  console.log("Connection released");
   cleanupConnection();
 }
 
@@ -137,26 +208,23 @@ function handleMicReleased() {
 // ========================
 
 async function startCall(targetUserId) {
-  await ensureLocalStream();
+  console.log("Starting call with:", targetUserId);
   createPeerConnection();
 
-  try {
-    isMakingOffer = true;
-    await pc.setLocalDescription(await pc.createOffer());
-    socket.emit("webrtcOffer", { targetUserId, offer: pc.localDescription });
-  } catch (err) {
-    console.error("Error creating offer:", err);
-  } finally {
-    isMakingOffer = false;
-  }
-}
-
-async function ensureLocalStream() {
-  if (localStream) return;
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (err) {
-    alert("Microphone access denied or error.");
+  // Only the impolite peer creates initial offer
+  if (!polite) {
+    try {
+      console.log("Creating initial offer (impolite peer)");
+      isMakingOffer = true;
+      await pc.setLocalDescription();
+      socket.emit("webrtcOffer", { targetUserId, offer: pc.localDescription });
+    } catch (err) {
+      console.error("Error creating offer:", err);
+    } finally {
+      isMakingOffer = false;
+    }
+  } else {
+    console.log("Waiting for offer (polite peer)");
   }
 }
 
@@ -165,7 +233,8 @@ function createPeerConnection() {
 
   pc = new RTCPeerConnection(iceServersConfig);
 
-  if (localStream) {
+  // Only add local tracks if microphone is enabled
+  if (localStream && isLocalMicEnabled) {
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
   }
 
@@ -184,19 +253,19 @@ function createPeerConnection() {
 }
 
 function handleRemoteTrack(event) {
+  console.log("Remote track received");
   remoteAudio.srcObject = event.streams[0];
 }
 
 async function handleNegotiationNeeded() {
   try {
+    console.log("Negotiation needed, making offer");
     isMakingOffer = true;
-    await pc.setLocalDescription(await pc.createOffer());
-    if (pc.signalingState === "stable") {
-      socket.emit("webrtcOffer", {
-        targetUserId: connectedUserId,
-        offer: pc.localDescription,
-      });
-    }
+    await pc.setLocalDescription();
+    socket.emit("webrtcOffer", {
+      targetUserId: connectedUserId,
+      offer: pc.localDescription,
+    });
   } catch (err) {
     console.error("Negotiation error:", err);
   } finally {
@@ -205,6 +274,7 @@ async function handleNegotiationNeeded() {
 }
 
 function handleICEConnectionChange() {
+  console.log("ICE connection state:", pc.iceConnectionState);
   if (["failed", "disconnected"].includes(pc.iceConnectionState)) {
     cleanupConnection();
   }
@@ -215,14 +285,28 @@ function handleICEConnectionChange() {
 // ========================
 
 async function handleOffer({ fromUserId, offer }) {
+  console.log("Received offer from:", fromUserId);
+  
   const offerCollision = isMakingOffer || pc?.signalingState !== "stable";
   isIgnoringOffer = !polite && offerCollision;
-  if (isIgnoringOffer) return;
+  
+  console.log("Offer collision:", offerCollision, "Ignoring:", isIgnoringOffer, "Polite:", polite);
+  
+  if (isIgnoringOffer) {
+    console.log("Ignoring offer due to collision");
+    return;
+  }
 
-  connectedUserId = fromUserId;
+  if (!connectedUserId) {
+    connectedUserId = fromUserId;
+    disconnect.disabled = false;
+    polite = currentUserId < fromUserId;
+    console.log("Setting polite role from offer:", polite);
+  }
 
-  await ensureLocalStream();
   createPeerConnection();
+  
+  isSettingRemoteAnswerPending = true;
 
   try {
     await setRemoteDesc(new RTCSessionDescription(offer));
@@ -234,14 +318,20 @@ async function handleOffer({ fromUserId, offer }) {
     });
   } catch (err) {
     console.error("Error handling offer:", err);
+  } finally {
+    isSettingRemoteAnswerPending = false;
   }
 }
 
 async function handleAnswer({ answer }) {
+  console.log("Received answer");
   try {
+    isSettingRemoteAnswerPending = true;
     await pc.setRemoteDescription(new RTCSessionDescription(answer));
   } catch (err) {
     console.error("Error setting answer:", err);
+  } finally {
+    isSettingRemoteAnswerPending = false;
   }
 }
 
@@ -271,10 +361,16 @@ function candidateMatchesSDP(candidate) {
 
 async function setRemoteDesc(desc) {
   try {
-    if (desc.type === "offer" && pc.signalingState !== "stable") {
-      await pc.setRemoteDescription({ type: "rollback" });
+    // Only rollback if we're in have-local-offer and this is an offer
+    if (desc.type === "offer" && pc.signalingState === "have-local-offer") {
+      console.log("Rolling back local offer");
+      await pc.setLocalDescription({ type: "rollback" });
     }
+    
     await pc.setRemoteDescription(desc);
+    console.log("Remote description set successfully, signaling state:", pc.signalingState);
+    
+    // Process pending candidates
     for (const candidate of pendingCandidates) {
       await pc
         .addIceCandidate(candidate)
@@ -291,19 +387,16 @@ async function setRemoteDesc(desc) {
 // ========================
 
 function cleanupConnection() {
+  console.log("Cleaning up connection");
   if (pc) {
     pc.close();
     pc = null;
   }
-  if (localStream) {
-    localStream.getTracks().forEach((t) => t.stop());
-    localStream = null;
-  }
+  
   connectedUserId = null;
-  releaseMicBtn.disabled = true;
+  disconnect.disabled = true;
 
   if (remoteAudio) {
     remoteAudio.srcObject = null;
-    remoteAudio.remove();
   }
 }

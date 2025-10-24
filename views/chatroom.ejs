@@ -7,14 +7,18 @@
         font-weight: bold;
         color: red;
       }
+      .active {
+        background-color: green;
+        color: white;
+      }
     </style>
   </head>
   <body>
     <h2 id="username"></h2>
-    <button id="releaseMicBtn" disabled>Release Mic</button>
+    <button id="toggleLocalMicBtn">🎤 Unmute</button>
+    <button id="disconnect" disabled>Disconnect</button>
     <ul id="usersList"></ul>
     <audio id="remoteAudio" autoplay="true"></audio>
-
     <script src="/socket.io/socket.io.js"></script>
     <script src="/client.js"></script>
   </body>
