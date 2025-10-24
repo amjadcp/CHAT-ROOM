@@ -83,12 +83,17 @@ async function enableLocalMicrophone() {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     isLocalMicEnabled = true;
     updateLocalMicButton();
-    
-    // If already in a call, add the track to existing peer connection
-    if (pc && connectedUserId) {
+
+    // If peer connection exists, add audio track(s) and trigger renegotiation
+    if (pc) {
       localStream.getTracks().forEach((track) => {
         pc.addTrack(track, localStream);
       });
+
+      // Renegotiate so remote receives our audio
+      if (connectedUserId) {
+        await maybeNegotiate();
+      }
     }
   } catch (err) {
     alert("Microphone access denied or error: " + err.message);
@@ -99,17 +104,27 @@ async function enableLocalMicrophone() {
 function disableLocalMicrophone() {
   if (localStream) {
     localStream.getTracks().forEach((track) => track.stop());
-    
-    // Remove tracks from peer connection if active
+
     if (pc) {
       const senders = pc.getSenders();
-      senders.forEach(sender => {
-        if (sender.track && sender.track.kind === 'audio') {
-          pc.removeTrack(sender);
+      senders.forEach((sender) => {
+        if (sender.track && sender.track.kind === "audio") {
+          try {
+            pc.removeTrack(sender);
+          } catch (e) {
+            // removeTrack might throw on some older implementations; ignore errors
+            console.warn("removeTrack error:", e);
+          }
         }
       });
+
+      // Renegotiate to inform remote we stopped sending audio
+      if (connectedUserId) {
+        // don't await; allow UI to continue — onnegotiationneeded may also fire depending on browser
+        maybeNegotiate().catch((e) => console.error("Reneg negotiation error:", e));
+      }
     }
-    
+
     localStream = null;
   }
   isLocalMicEnabled = false;
@@ -157,10 +172,10 @@ function createConnectButton(user) {
   btn.className = "connectBtn";
 
   btn.disabled = !!connectedUserId || user.engagedWith !== null;
-  
+
   btn.onclick = () => {
     console.log("Connect button clicked for user:", user._id);
-    
+
     if (connectedUserId) {
       alert("Already engaged in a conversation.");
       return;
@@ -190,11 +205,11 @@ async function handleConnectionRequested({ engagedWith }) {
   console.log("Connection requested with:", engagedWith);
   connectedUserId = engagedWith;
   disconnect.disabled = false;
-  
-  // Determine who is polite based on user IDs
+
+  // Determine who is polite based on user IDs (string comparison is okay as long as consistent)
   polite = currentUserId < engagedWith;
   console.log("Polite role:", polite);
-  
+
   await startCall(engagedWith);
 }
 
@@ -207,16 +222,43 @@ function handleConnectionReleased() {
 // 🔹 WEBRTC CORE LOGIC
 // ========================
 
+// Helper: trigger a negotiation (createOffer -> setLocalDescription -> send)
+async function maybeNegotiate() {
+  if (!pc || !connectedUserId) return;
+
+  // If we're already creating an offer, don't start another
+  if (isMakingOffer) {
+    console.log("Already making an offer; skipping maybeNegotiate");
+    return;
+  }
+
+  try {
+    console.log("maybeNegotiate: creating offer...");
+    isMakingOffer = true;
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit("webrtcOffer", {
+      targetUserId: connectedUserId,
+      offer: pc.localDescription,
+    });
+  } catch (err) {
+    console.error("Error in maybeNegotiate:", err);
+  } finally {
+    isMakingOffer = false;
+  }
+}
+
 async function startCall(targetUserId) {
   console.log("Starting call with:", targetUserId);
   createPeerConnection();
 
-  // Only the impolite peer creates initial offer
+  // Only the impolite peer creates initial offer (polite waits for incoming offer)
   if (!polite) {
     try {
       console.log("Creating initial offer (impolite peer)");
       isMakingOffer = true;
-      await pc.setLocalDescription();
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
       socket.emit("webrtcOffer", { targetUserId, offer: pc.localDescription });
     } catch (err) {
       console.error("Error creating offer:", err);
@@ -224,7 +266,7 @@ async function startCall(targetUserId) {
       isMakingOffer = false;
     }
   } else {
-    console.log("Waiting for offer (polite peer)");
+    console.log("Polite peer: waiting for offer");
   }
 }
 
@@ -233,7 +275,7 @@ function createPeerConnection() {
 
   pc = new RTCPeerConnection(iceServersConfig);
 
-  // Only add local tracks if microphone is enabled
+  // Add local tracks if microphone is enabled
   if (localStream && isLocalMicEnabled) {
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
   }
@@ -249,33 +291,47 @@ function createPeerConnection() {
 
   pc.ontrack = handleRemoteTrack;
   pc.oniceconnectionstatechange = handleICEConnectionChange;
-  pc.onnegotiationneeded = handleNegotiationNeeded;
+
+  // Use onnegotiationneeded to follow perfect negotiation pattern and avoid races
+  pc.onnegotiationneeded = async () => {
+    console.log("onnegotiationneeded fired");
+    // If polite and an offer collision occurs, polite will wait and handle via handleOffer
+    if (isMakingOffer) {
+      console.log("Already making an offer; skipping onnegotiationneeded");
+      return;
+    }
+
+    try {
+      isMakingOffer = true;
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit("webrtcOffer", {
+        targetUserId: connectedUserId,
+        offer: pc.localDescription,
+      });
+    } catch (err) {
+      console.error("Negotiationneeded error:", err);
+    } finally {
+      isMakingOffer = false;
+    }
+  };
 }
 
 function handleRemoteTrack(event) {
   console.log("Remote track received");
+  // attach first stream
   remoteAudio.srcObject = event.streams[0];
 }
 
 async function handleNegotiationNeeded() {
-  try {
-    console.log("Negotiation needed, making offer");
-    isMakingOffer = true;
-    await pc.setLocalDescription();
-    socket.emit("webrtcOffer", {
-      targetUserId: connectedUserId,
-      offer: pc.localDescription,
-    });
-  } catch (err) {
-    console.error("Negotiation error:", err);
-  } finally {
-    isMakingOffer = false;
-  }
+  // not used; we use pc.onnegotiationneeded directly
 }
 
+// ICE state handling
 function handleICEConnectionChange() {
-  console.log("ICE connection state:", pc.iceConnectionState);
-  if (["failed", "disconnected"].includes(pc.iceConnectionState)) {
+  console.log("ICE connection state:", pc?.iceConnectionState);
+  if (!pc) return;
+  if (["failed", "disconnected", "closed"].includes(pc.iceConnectionState)) {
     cleanupConnection();
   }
 }
@@ -286,17 +342,19 @@ function handleICEConnectionChange() {
 
 async function handleOffer({ fromUserId, offer }) {
   console.log("Received offer from:", fromUserId);
-  
+
+  // Offer collision detection
   const offerCollision = isMakingOffer || pc?.signalingState !== "stable";
   isIgnoringOffer = !polite && offerCollision;
-  
+
   console.log("Offer collision:", offerCollision, "Ignoring:", isIgnoringOffer, "Polite:", polite);
-  
+
   if (isIgnoringOffer) {
     console.log("Ignoring offer due to collision");
     return;
   }
 
+  // If we don't have a connected user set, set it now
   if (!connectedUserId) {
     connectedUserId = fromUserId;
     disconnect.disabled = false;
@@ -305,13 +363,17 @@ async function handleOffer({ fromUserId, offer }) {
   }
 
   createPeerConnection();
-  
+
   isSettingRemoteAnswerPending = true;
 
   try {
-    await setRemoteDesc(new RTCSessionDescription(offer));
+    // setRemoteDesc handles rollback if needed
+    await setRemoteDesc(offer);
+
+    // Create an answer to the incoming offer
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
+
     socket.emit("webrtcAnswer", {
       targetUserId: fromUserId,
       answer: pc.localDescription,
@@ -327,7 +389,13 @@ async function handleAnswer({ answer }) {
   console.log("Received answer");
   try {
     isSettingRemoteAnswerPending = true;
+    if (!pc) {
+      console.warn("No peer connection while receiving answer");
+      return;
+    }
     await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    // After setting remote, process any pending candidates
+    await flushPendingCandidates();
   } catch (err) {
     console.error("Error setting answer:", err);
   } finally {
@@ -338,45 +406,57 @@ async function handleAnswer({ answer }) {
 async function handleCandidate({ candidate }) {
   const iceCandidate = new RTCIceCandidate(candidate);
   try {
+    // If pc and remoteDescription exist and ufrag matches, add immediately.
     if (pc && pc.remoteDescription && candidateMatchesSDP(iceCandidate)) {
       await pc.addIceCandidate(iceCandidate);
     } else {
+      // otherwise queue until remote description is set
       pendingCandidates.push(iceCandidate);
     }
   } catch (err) {
-    if (!err.message.includes("Unknown ufrag")) {
+    // Ignore Unknown ufrag errors (they'll be handled when SDPs are set)
+    if (!err.message || !err.message.includes("Unknown ufrag")) {
       console.error("Error adding ICE candidate:", err);
     }
   }
 }
 
 function candidateMatchesSDP(candidate) {
-  const sdp = pc.remoteDescription?.sdp;
+  const sdp = pc?.remoteDescription?.sdp;
   if (!sdp) return false;
   const match = /a=ice-ufrag:(\S+)/.exec(sdp);
   if (!match) return false;
   const ufrag = match[1];
+  // candidate.usernameFragment is the standardized property name for the candidate ufrag
   return candidate.usernameFragment === ufrag;
+}
+
+async function flushPendingCandidates() {
+  if (!pc || !pc.remoteDescription) return;
+  for (const cand of pendingCandidates) {
+    try {
+      await pc.addIceCandidate(cand);
+    } catch (e) {
+      console.error("Candidate add error while flushing:", e);
+    }
+  }
+  pendingCandidates = [];
 }
 
 async function setRemoteDesc(desc) {
   try {
     // Only rollback if we're in have-local-offer and this is an offer
     if (desc.type === "offer" && pc.signalingState === "have-local-offer") {
-      console.log("Rolling back local offer");
+      console.log("Rolling back local offer before setting remote offer");
       await pc.setLocalDescription({ type: "rollback" });
     }
-    
-    await pc.setRemoteDescription(desc);
+
+    // Accept either plain object or RTCSessionDescription
+    await pc.setRemoteDescription(new RTCSessionDescription(desc));
     console.log("Remote description set successfully, signaling state:", pc.signalingState);
-    
-    // Process pending candidates
-    for (const candidate of pendingCandidates) {
-      await pc
-        .addIceCandidate(candidate)
-        .catch((e) => console.error("Candidate error:", e));
-    }
-    pendingCandidates = [];
+
+    // After remote description set, flush queued ICE candidates
+    await flushPendingCandidates();
   } catch (err) {
     console.error("Failed setting remote description:", err);
   }
@@ -389,14 +469,36 @@ async function setRemoteDesc(desc) {
 function cleanupConnection() {
   console.log("Cleaning up connection");
   if (pc) {
-    pc.close();
+    try {
+      pc.close();
+    } catch (e) {
+      console.warn("Error closing pc:", e);
+    }
     pc = null;
   }
-  
+
   connectedUserId = null;
   disconnect.disabled = true;
 
   if (remoteAudio) {
     remoteAudio.srcObject = null;
   }
+
+  // Stop and clear local stream (but keep mic UI state as-is)
+  if (localStream) {
+    try {
+      localStream.getTracks().forEach((t) => t.stop());
+    } catch (e) {
+      console.warn("Error stopping local tracks on cleanup:", e);
+    }
+    localStream = null;
+  }
+
+  // Reset negotiation flags to safe defaults
+  isMakingOffer = false;
+  isIgnoringOffer = false;
+  isSettingRemoteAnswerPending = false;
+  pendingCandidates = [];
+  isLocalMicEnabled = false;
+  updateLocalMicButton();
 }
