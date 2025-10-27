@@ -26,7 +26,7 @@
         background: white;
         padding: 20px;
         border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
       }
 
       .right-panel {
@@ -34,7 +34,7 @@
         background: white;
         padding: 20px;
         border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
       }
 
       .controls {
@@ -62,7 +62,7 @@
       }
 
       #toggleLocalMicBtn {
-        background-color: #4CAF50;
+        background-color: #4caf50;
         color: white;
       }
 
@@ -86,7 +86,7 @@
       }
 
       #myRoom.dragover {
-        border-color: #4CAF50;
+        border-color: #4caf50;
         background-color: #e8f5e9;
       }
 
@@ -103,7 +103,7 @@
 
       .room-user {
         background-color: #e3f2fd;
-        border: 2px solid #2196F3;
+        border: 2px solid #2196f3;
         border-radius: 5px;
         padding: 10px;
         margin: 10px 0;
@@ -141,7 +141,7 @@
 
       .user-item:hover:not(.engaged) {
         background-color: #e8f5e9;
-        border-color: #4CAF50;
+        border-color: #4caf50;
         transform: translateX(5px);
       }
 
@@ -180,11 +180,11 @@
         border-radius: 5px;
         border: 1px solid #ddd;
       }
-      
+
       #remoteAudioContainer:empty {
         display: none;
       }
-      
+
       #remoteAudioContainer audio {
         width: 100%;
         margin: 10px 0;
@@ -195,11 +195,33 @@
         border-bottom: 2px solid #eee;
         padding-bottom: 10px;
       }
+
+      @keyframes slideIn {
+        from {
+          transform: translateX(400px);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
+      }
+
+      @keyframes slideOut {
+        from {
+          transform: translateX(0);
+          opacity: 1;
+        }
+        to {
+          transform: translateX(400px);
+          opacity: 0;
+        }
+      }
     </style>
   </head>
   <body>
     <h2 id="username">Loading...</h2>
-    
+
     <div class="controls">
       <button id="toggleLocalMicBtn">🎤 Unmute</button>
       <button id="leaveRoom" disabled>Leave Room</button>

@@ -50,6 +50,9 @@ function setupSocketHandlers() {
   socket.on("roomUpdated", handleRoomUpdated);
   socket.on("micStateChanged", handleMicStateChanged);
 
+  socket.on("userBusy", handleUserBusy);
+  socket.on("error", handleError);
+
   socket.on("webrtcOffer", handleOffer);
   socket.on("webrtcAnswer", handleAnswer);
   socket.on("webrtcCandidate", handleCandidate);
@@ -724,6 +727,60 @@ async function processPendingCandidates(userId) {
     pendingCandidates[userId] = [];
   }
 }
+
+function handleUserBusy({ userId, message }) {
+  console.log("User is busy:", userId, message);
+  
+  // Show a notification to the user
+  showNotification(message, "warning");
+}
+
+function handleError({ message }) {
+  console.error("Server error:", message);
+  showNotification(message, "error");
+}
+
+function showNotification(message, type = "info") {
+  // Remove existing notification if any
+  const existing = document.getElementById("notification");
+  if (existing) {
+    existing.remove();
+  }
+  
+  const notification = document.createElement("div");
+  notification.id = "notification";
+  notification.textContent = message;
+  
+  // Style based on type
+  const colors = {
+    info: "#2196F3",
+    warning: "#ff9800",
+    error: "#f44336",
+    success: "#4CAF50"
+  };
+  
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: ${colors[type] || colors.info};
+    color: white;
+    padding: 15px 20px;
+    border-radius: 5px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    z-index: 10000;
+    animation: slideIn 0.3s ease-out;
+  `;
+  
+  document.body.appendChild(notification);
+  
+  // Auto-remove after 3 seconds
+  setTimeout(() => {
+    notification.style.animation = "slideOut 0.3s ease-out";
+    setTimeout(() => notification.remove(), 300);
+  }, 3000);
+}
+
 
 // ========================
 // 🔹 CLEANUP

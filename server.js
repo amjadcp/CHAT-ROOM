@@ -95,24 +95,50 @@ io.on("connection", (socket) => {
     
     if (!currentUser || !targetUser) {
       console.log("User not found");
+      socket.emit("error", { message: "User not found" });
       return;
     }
     
-    // Check if target user is already in someone's room
-    if (targetUser.inRoom !== null) {
-      console.log("Target user already in a room");
+    // ✅ Check if current user is already in someone else's room
+    if (currentUser.inRoom !== null && currentUser.inRoom !== currentUserId) {
+      console.log(`Current user ${currentUserId} is already in room with ${currentUser.inRoom}`);
+      socket.emit("error", { 
+        message: "You are already in another conversation. Please leave it first." 
+      });
       return;
+    }
+    
+    // ✅ Check if target user is already in someone's room
+    if (targetUser.inRoom !== null && targetUser.inRoom !== currentUserId) {
+      console.log(`Target user ${targetUserId} is already in room with ${targetUser.inRoom}`);
+      socket.emit("userBusy", { 
+        userId: targetUserId,
+        message: "This user is already in another conversation" 
+      });
+      return;
+    }
+    
+    // Check if target is already in current user's room
+    if (currentUser.myRoom.includes(targetUserId)) {
+      console.log("Target user already in your room");
+      return;
+    }
+    
+    // ✅ FIX: Mark current user as engaged if this is their first room member
+    if (currentUser.myRoom.length === 0 && currentUser.inRoom === null) {
+      currentUser.inRoom = currentUserId; // Mark as engaged in own room
+      console.log(`Current user ${currentUserId} marked as engaged in their own room`);
     }
     
     // Add target user to current user's room
-    if (!currentUser.myRoom.includes(targetUserId)) {
-      currentUser.myRoom.push(targetUserId);
-      await currentUser.save();
-    }
+    currentUser.myRoom.push(targetUserId);
+    await currentUser.save();
     
     // Mark target user as being in current user's room
     targetUser.inRoom = currentUserId;
     await targetUser.save();
+    
+    console.log(`User ${targetUserId} added to ${currentUserId}'s room`);
     
     // Notify current user (who initiated the add)
     io.to(currentUserId).emit("userAddedToRoom", { 
@@ -151,15 +177,28 @@ io.on("connection", (socket) => {
     
     if (!currentUser || !targetUser) return;
     
+    // Only allow removal if target is in current user's room
+    if (targetUser.inRoom !== currentUserId) {
+      console.log("Cannot remove user - not in your room");
+      return;
+    }
+    
     // Remove from current user's room
     currentUser.myRoom = currentUser.myRoom.filter(id => id !== targetUserId);
+    
+    // ✅ FIX: Clear host's engaged status if room is now empty
+    if (currentUser.myRoom.length === 0) {
+      currentUser.inRoom = null;
+      console.log(`User ${currentUserId} no longer engaged (room empty)`);
+    }
+    
     await currentUser.save();
     
-    // Update target user status if they were in this room
-    if (targetUser.inRoom === currentUserId) {
-      targetUser.inRoom = null;
-      await targetUser.save();
-    }
+    // Update target user status
+    targetUser.inRoom = null;
+    await targetUser.save();
+    
+    console.log(`User ${targetUserId} removed from ${currentUserId}'s room`);
     
     // Notify both users
     io.to(currentUserId).emit("userRemovedFromRoom", { userId: targetUserId });
@@ -182,11 +221,20 @@ io.on("connection", (socket) => {
     const currentUser = await User.findById(currentUserId);
     if (!currentUser) return;
     
+    console.log(`User ${currentUserId} leaving room`);
+    
     // If user is in someone else's room, remove them
-    if (currentUser.inRoom) {
+    if (currentUser.inRoom && currentUser.inRoom !== currentUserId) {
       const hostUser = await User.findById(currentUser.inRoom);
       if (hostUser) {
         hostUser.myRoom = hostUser.myRoom.filter(id => id !== currentUserId);
+        
+        // ✅ FIX: Clear host's status if their room is now empty
+        if (hostUser.myRoom.length === 0) {
+          hostUser.inRoom = null;
+          console.log(`Host ${hostUser._id} no longer engaged (room empty after member left)`);
+        }
+        
         await hostUser.save();
         
         // Notify host
@@ -218,6 +266,9 @@ io.on("connection", (socket) => {
       }
       
       currentUser.myRoom = [];
+      // ✅ FIX: Clear own engagement status
+      currentUser.inRoom = null;
+      console.log(`User ${currentUserId} no longer engaged (cleared their own room)`);
     }
     
     await currentUser.save();
@@ -260,11 +311,20 @@ io.on("connection", (socket) => {
     const currentUser = await User.findById(currentUserId);
     if (!currentUser) return;
 
+    console.log(`User ${currentUserId} disconnecting`);
+
     // If user was in someone else's room
-    if (currentUser.inRoom) {
+    if (currentUser.inRoom && currentUser.inRoom !== currentUserId) {
       const hostUser = await User.findById(currentUser.inRoom);
       if (hostUser) {
         hostUser.myRoom = hostUser.myRoom.filter(id => id !== currentUserId);
+        
+        // ✅ FIX: Clear host's status if their room is now empty
+        if (hostUser.myRoom.length === 0) {
+          hostUser.inRoom = null;
+          console.log(`Host ${hostUser._id} no longer engaged (room empty after disconnect)`);
+        }
+        
         await hostUser.save();
         
         io.to(hostUser._id.toString()).emit("userRemovedFromRoom", { 
