@@ -35,6 +35,7 @@ function init() {
   socket.emit("join");
   setupSocketHandlers();
   setupUIHandlers();
+  setupTouchSupport();
 }
 
 init();
@@ -330,14 +331,16 @@ function renderUserList(users) {
       li.classList.add("engaged");
     }
 
+    // User name
     const nameSpan = document.createElement("span");
+    nameSpan.className = "user-name";
     nameSpan.textContent = u.name;
     li.appendChild(nameSpan);
 
     // Status
     const statusSpan = document.createElement("span");
     statusSpan.className = "status";
-    statusSpan.textContent = isEngaged ? " (Engaged)" : " (Available)";
+    statusSpan.textContent = isEngaged ? "(Engaged)" : "(Available)";
     li.appendChild(statusSpan);
 
     // Mic status
@@ -345,11 +348,11 @@ function renderUserList(users) {
     micSpan.className = "micStatus";
     const micOn = userMicStates[u._id] ?? false;
     if (isEngaged) {
-      micSpan.textContent = micOn ? " 🎤" : " 🔇";
+      micSpan.textContent = micOn ? "🎤" : "🔇";
     }
     li.appendChild(micSpan);
 
-    // Drag handlers
+    // Desktop drag handlers
     li.addEventListener("dragstart", (e) => {
       if (isEngaged) {
         e.preventDefault();
@@ -362,6 +365,31 @@ function renderUserList(users) {
     li.addEventListener("dragend", () => {
       li.classList.remove("dragging");
     });
+
+    // Mobile touch handlers
+    if (!isEngaged) {
+      let touchStartTime;
+      
+      li.addEventListener("touchstart", (e) => {
+        touchStartTime = Date.now();
+        li.dataset.touchStartTime = touchStartTime;
+        
+        // Start drag after a short delay
+        setTimeout(() => {
+          if (li.dataset.touchStartTime === touchStartTime.toString()) {
+            handleTouchStart(e, u._id, li);
+          }
+        }, 200);
+      });
+      
+      // Also support simple tap to add
+      li.addEventListener("click", (e) => {
+        if (!touchDragState.active && window.innerWidth <= 768) {
+          console.log("Click/tap to add user:", u._id);
+          socket.emit("addUserToRoom", u._id);
+        }
+      });
+    }
 
     usersList.appendChild(li);
   });
@@ -812,3 +840,174 @@ window.addEventListener("beforeunload", () => {
   cleanupAllConnections();
   socket.emit("leaveRoom");
 });
+
+// ========================
+// 🔹 TOUCH SUPPORT FOR MOBILE
+// ========================
+let touchDragState = {
+  active: false,
+  userId: null,
+  element: null,
+  clone: null,
+  startX: 0,
+  startY: 0,
+  currentX: 0,
+  currentY: 0
+};
+
+function setupTouchSupport() {
+  const touchIndicator = document.getElementById('touchIndicator');
+  
+  // Touch event handlers will be added per user item
+  document.addEventListener('touchmove', handleTouchMove, { passive: false });
+  document.addEventListener('touchend', handleTouchEnd);
+  document.addEventListener('touchcancel', handleTouchEnd);
+}
+
+function handleTouchStart(e, userId, element) {
+  // Check if user is engaged
+  if (element.classList.contains('engaged')) {
+    return;
+  }
+  
+  e.preventDefault();
+  
+  const touch = e.touches[0];
+  
+  touchDragState = {
+    active: true,
+    userId: userId,
+    element: element,
+    clone: null,
+    startX: touch.clientX,
+    startY: touch.clientY,
+    currentX: touch.clientX,
+    currentY: touch.clientY
+  };
+  
+  // Create a clone for dragging
+  const clone = element.cloneNode(true);
+  clone.classList.add('touch-dragging');
+  clone.style.width = element.offsetWidth + 'px';
+  clone.style.left = touch.clientX - (element.offsetWidth / 2) + 'px';
+  clone.style.top = touch.clientY - 20 + 'px';
+  document.body.appendChild(clone);
+  
+  touchDragState.clone = clone;
+  
+  // Add visual feedback to original
+  element.style.opacity = '0.3';
+  
+  // Show touch indicator
+  const indicator = document.getElementById('touchIndicator');
+  indicator.classList.add('active');
+  indicator.style.left = touch.clientX + 'px';
+  indicator.style.top = touch.clientY + 'px';
+}
+
+function handleTouchMove(e) {
+  if (!touchDragState.active) return;
+  
+  e.preventDefault();
+  
+  const touch = e.touches[0];
+  touchDragState.currentX = touch.clientX;
+  touchDragState.currentY = touch.clientY;
+  
+  // Move the clone
+  if (touchDragState.clone) {
+    touchDragState.clone.style.left = touch.clientX - (touchDragState.clone.offsetWidth / 2) + 'px';
+    touchDragState.clone.style.top = touch.clientY - 20 + 'px';
+  }
+  
+  // Update touch indicator
+  const indicator = document.getElementById('touchIndicator');
+  indicator.style.left = touch.clientX + 'px';
+  indicator.style.top = touch.clientY + 'px';
+  
+  // Check if over drop zone
+  const dropZone = myRoomEl;
+  const rect = dropZone.getBoundingClientRect();
+  
+  if (touch.clientX >= rect.left && 
+      touch.clientX <= rect.right && 
+      touch.clientY >= rect.top && 
+      touch.clientY <= rect.bottom) {
+    dropZone.classList.add('touch-dragover');
+  } else {
+    dropZone.classList.remove('touch-dragover');
+  }
+}
+
+function handleTouchEnd(e) {
+  if (!touchDragState.active) return;
+  
+  const touch = e.changedTouches[0];
+  
+  // Check if dropped in the room area
+  const dropZone = myRoomEl;
+  const rect = dropZone.getBoundingClientRect();
+  
+  if (touch.clientX >= rect.left && 
+      touch.clientX <= rect.right && 
+      touch.clientY >= rect.top && 
+      touch.clientY <= rect.bottom) {
+    
+    const userId = touchDragState.userId;
+    if (userId && userId !== currentUserId && !myRoom.has(userId)) {
+      console.log("Touch dropping user into room:", userId);
+      socket.emit("addUserToRoom", userId);
+    }
+  }
+  
+  // Cleanup
+  if (touchDragState.clone) {
+    touchDragState.clone.remove();
+  }
+  
+  if (touchDragState.element) {
+    touchDragState.element.style.opacity = '';
+  }
+  
+  dropZone.classList.remove('touch-dragover');
+  
+  // Hide touch indicator
+  const indicator = document.getElementById('touchIndicator');
+  indicator.classList.remove('active');
+  
+  touchDragState = {
+    active: false,
+    userId: null,
+    element: null,
+    clone: null,
+    startX: 0,
+    startY: 0,
+    currentX: 0,
+    currentY: 0
+  };
+}
+
+// Alternative: Tap to add (simpler mobile interaction)
+function handleUserTap(e, userId, element) {
+  if (element.classList.contains('engaged')) {
+    return;
+  }
+  
+  // Prevent if we're dragging
+  if (touchDragState.active) {
+    return;
+  }
+  
+  // Check if this is a tap (not a drag)
+  const timeSinceStart = Date.now() - element.dataset.touchStartTime;
+  if (timeSinceStart < 300) { // 300ms threshold for tap
+    console.log("Tapping user to add to room:", userId);
+    socket.emit("addUserToRoom", userId);
+    
+    // Visual feedback
+    element.style.transform = 'scale(0.95)';
+    setTimeout(() => {
+      element.style.transform = '';
+    }, 200);
+  }
+}
