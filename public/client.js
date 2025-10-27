@@ -3,19 +3,21 @@ const socket = io();
 // ==== Global State ====
 let currentUserId = null;
 let currentUserName = null;
-let connectedUserId = null;
 let localStream = null;
-let pc = null;
-let pendingCandidates = [];
+let peerConnections = {}; // Map of userId -> RTCPeerConnection
+let pendingCandidates = {}; // Map of userId -> [candidates]
 let isLocalMicEnabled = false;
 let userMicStates = {};
+let myRoom = new Set(); // Users in my room
+let makingOffers = new Set(); // Track ongoing offers
 
 // ==== UI Elements ====
 const usersList = document.getElementById("usersList");
 const userNameEl = document.getElementById("username");
-const disconnect = document.getElementById("disconnect");
+const leaveRoomBtn = document.getElementById("leaveRoom");
 const toggleLocalMicBtn = document.getElementById("toggleLocalMicBtn");
-const remoteAudio = document.getElementById("remoteAudio");
+const myRoomEl = document.getElementById("myRoom");
+const remoteAudioContainer = document.getElementById("remoteAudioContainer");
 
 // ==== ICE Config ====
 const iceServersConfig = {
@@ -25,12 +27,6 @@ const iceServersConfig = {
     { urls: "stun:stun2.l.google.com:19302" },
   ],
 };
-
-// ==== Flags for negotiation ====
-let polite = false;
-let isMakingOffer = false;
-let isIgnoringOffer = false;
-let isSettingRemoteAnswerPending = false;
 
 // ========================
 // 🔹 INITIALIZATION
@@ -49,8 +45,9 @@ init();
 function setupSocketHandlers() {
   socket.on("userCreated", handleUserCreated);
   socket.on("userListUpdate", renderUserList);
-  socket.on("micToggled", handleConnectionRequested);
-  socket.on("micReleased", handleConnectionReleased);
+  socket.on("userAddedToRoom", handleUserAddedToRoom);
+  socket.on("userRemovedFromRoom", handleUserRemovedFromRoom);
+  socket.on("roomUpdated", handleRoomUpdated);
   socket.on("micStateChanged", handleMicStateChanged);
 
   socket.on("webrtcOffer", handleOffer);
@@ -71,33 +68,72 @@ function setupUIHandlers() {
     }
   });
 
-  // Release/disconnect from current conversation
-  disconnect.addEventListener("click", () => {
-    if (connectedUserId) {
-      socket.emit("releaseMic");
-      cleanupConnection();
+  // Leave room
+  leaveRoomBtn.addEventListener("click", () => {
+    leaveRoom();
+  });
+
+  // Setup drop zone for the room
+  setupDropZone();
+}
+
+function setupDropZone() {
+  myRoomEl.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    myRoomEl.classList.add("dragover");
+  });
+
+  myRoomEl.addEventListener("dragleave", () => {
+    myRoomEl.classList.remove("dragover");
+  });
+
+  myRoomEl.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    myRoomEl.classList.remove("dragover");
+    
+    const userId = e.dataTransfer.getData("userId");
+    if (userId && userId !== currentUserId && !myRoom.has(userId)) {
+      console.log("Dropping user into room:", userId);
+      socket.emit("addUserToRoom", userId);
     }
   });
 }
 
 async function enableLocalMicrophone() {
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Request audio with specific constraints
+    localStream = await navigator.mediaDevices.getUserMedia({ 
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      } 
+    });
+    
+    console.log("Local stream acquired, tracks:", localStream.getTracks().length);
+    localStream.getTracks().forEach(track => {
+      console.log("Local track:", track.kind, "enabled:", track.enabled, "muted:", track.muted);
+    });
+    
     isLocalMicEnabled = true;
     socket.emit("micStateChanged", { userId: currentUserId, micOn: true });
     userMicStates[currentUserId] = true;
-    updateMicStatusInList(currentUserId, true);
     updateLocalMicButton();
 
-    // If peer connection exists, add audio track(s) and trigger renegotiation
-    if (pc) {
-      localStream.getTracks().forEach((track) => {
-        pc.addTrack(track, localStream);
-      });
+    console.log("Adding tracks to existing peer connections");
 
-      // Renegotiate so remote receives our audio
-      if (connectedUserId) {
-        await maybeNegotiate();
+    // Add tracks to all existing peer connections
+    for (const [userId, pc] of Object.entries(peerConnections)) {
+      console.log("Adding local track to peer:", userId);
+      localStream.getTracks().forEach((track) => {
+        const sender = pc.addTrack(track, localStream);
+        console.log("Track added to", userId, ":", track.kind, track.label);
+      });
+      
+      // Trigger renegotiation if needed
+      if (pc.signalingState === "stable") {
+        console.log("Triggering renegotiation for:", userId);
+        await createAndSendOffer(userId);
       }
     }
   } catch (err) {
@@ -106,28 +142,152 @@ async function enableLocalMicrophone() {
   }
 }
 
+async function createAndSendOffer(userId) {
+  const pc = peerConnections[userId];
+  if (!pc) return;
+  
+  try {
+    const offer = await pc.createOffer({
+      offerToReceiveAudio: true
+    });
+    await pc.setLocalDescription(offer);
+    socket.emit("webrtcOffer", {
+      targetUserId: userId,
+      offer: pc.localDescription,
+    });
+    console.log("Renegotiation offer sent to:", userId);
+  } catch (err) {
+    console.error("Error creating renegotiation offer:", err);
+  }
+}
+
+function showAudioUnblockPrompt() {
+  if (document.getElementById("audioPrompt")) return;
+  
+  const prompt = document.createElement("div");
+  prompt.id = "audioPrompt";
+  prompt.style.cssText = `
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #fff;
+    padding: 20px;
+    border-radius: 10px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    z-index: 10000;
+    text-align: center;
+  `;
+  
+  prompt.innerHTML = `
+    <h3>Enable Audio</h3>
+    <p>Click below to enable audio playback</p>
+    <button id="enableAudioBtn" style="
+      padding: 10px 20px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+    ">Enable Audio</button>
+  `;
+  
+  document.body.appendChild(prompt);
+  
+  document.getElementById("enableAudioBtn").onclick = () => {
+    // Try to play all audio elements
+    document.querySelectorAll("audio").forEach(audio => {
+      audio.play().catch(err => console.error("Failed to play:", err));
+    });
+    prompt.remove();
+  };
+}
+
+function handleRemoteTrack(event, userId) {
+  console.log("=== Remote track received from:", userId, "===");
+  console.log("Streams:", event.streams.length);
+  console.log("Track kind:", event.track.kind);
+  console.log("Track enabled:", event.track.enabled);
+  console.log("Track muted:", event.track.muted);
+  console.log("Track readyState:", event.track.readyState);
+  
+  if (event.streams && event.streams[0]) {
+    console.log("Stream tracks:", event.streams[0].getTracks().length);
+    event.streams[0].getTracks().forEach(track => {
+      console.log("Stream track:", track.kind, "enabled:", track.enabled, "muted:", track.muted);
+    });
+  }
+  
+  let audioEl = document.getElementById(`audio-${userId}`);
+  if (!audioEl) {
+    audioEl = document.createElement("audio");
+    audioEl.id = `audio-${userId}`;
+    audioEl.autoplay = true;
+    audioEl.playsInline = true; // Important for mobile
+    audioEl.controls = true; // Keep controls for debugging
+    audioEl.volume = 1.0;
+    
+    // Add to a visible container
+    remoteAudioContainer.appendChild(audioEl);
+    
+    // Add label for debugging
+    const label = document.createElement("div");
+    label.textContent = `Audio from: ${userId.substring(0, 8)}...`;
+    label.style.fontSize = "12px";
+    label.style.color = "#666";
+    remoteAudioContainer.appendChild(label);
+    
+    console.log("Created new audio element for:", userId);
+  }
+  
+  if (event.streams && event.streams[0]) {
+    audioEl.srcObject = event.streams[0];
+    console.log("Set srcObject for audio element");
+    
+    // Try to play explicitly (helps with autoplay policies)
+    audioEl.play()
+      .then(() => {
+        console.log("Audio playback started successfully for:", userId);
+      })
+      .catch(err => {
+        console.error("Audio playback failed:", err);
+        // Show user interaction prompt if autoplay blocked
+        showAudioUnblockPrompt();
+      });
+      
+    // Monitor audio element
+    audioEl.onloadedmetadata = () => {
+      console.log("Audio metadata loaded for:", userId);
+    };
+    
+    audioEl.onplay = () => {
+      console.log("Audio started playing for:", userId);
+    };
+    
+    audioEl.onerror = (e) => {
+      console.error("Audio element error for:", userId, e);
+    };
+  }
+}
+
+
 function disableLocalMicrophone() {
   if (localStream) {
     localStream.getTracks().forEach((track) => track.stop());
 
-    if (pc) {
+    // Remove tracks from all peer connections
+    for (const pc of Object.values(peerConnections)) {
       const senders = pc.getSenders();
       senders.forEach((sender) => {
         if (sender.track && sender.track.kind === "audio") {
           try {
             pc.removeTrack(sender);
           } catch (e) {
-            // removeTrack might throw on some older implementations; ignore errors
             console.warn("removeTrack error:", e);
           }
         }
       });
-
-      // Renegotiate to inform remote we stopped sending audio
-      if (connectedUserId) {
-        // don't await; allow UI to continue — onnegotiationneeded may also fire depending on browser
-        maybeNegotiate().catch((e) => console.error("Reneg negotiation error:", e));
-      }
     }
 
     localStream = null;
@@ -135,7 +295,6 @@ function disableLocalMicrophone() {
   isLocalMicEnabled = false;
   socket.emit("micStateChanged", { userId: currentUserId, micOn: false });
   userMicStates[currentUserId] = false;
-  updateMicStatusInList(currentUserId, false);
   updateLocalMicButton();
 }
 
@@ -159,82 +318,101 @@ function renderUserList(users) {
 
     const li = document.createElement("li");
     li.setAttribute("data-userid", u._id);
-    li.textContent = `${u.name} `;
-
-    const connectBtn = createConnectButton(u);
-    li.appendChild(connectBtn);
-
-    // Status (engaged / available)
-    const statusSpan = document.createElement("span");
-    statusSpan.className = "status";
-    statusSpan.textContent = u.engagedWith ? "Engaged" : "Available";
-    if (u.engagedWith) li.classList.add("engaged");
-    li.appendChild(statusSpan);
-
-    // Mic status (ON/OFF)
-    const micSpan = document.createElement("span");
-    micSpan.className = "micStatus";
-
-    const micOn = userMicStates[u._id] ?? false;
-    if (u.engagedWith) {
-      micSpan.textContent = micOn ? "🎤 Mic ON" : "🔇 Mic OFF";
-      micSpan.classList.toggle("activeMic", micOn);
-      micSpan.classList.toggle("inactiveMic", !micOn);
-    } else {
-      // If not engaged, hide mic info
-      micSpan.textContent = "";
-      micSpan.classList.remove("activeMic", "inactiveMic");
+    li.setAttribute("draggable", "true");
+    li.className = "user-item";
+    
+    // Check if user is engaged (in someone's room)
+    const isEngaged = u.inRoom !== null;
+    if (isEngaged) {
+      li.classList.add("engaged");
     }
 
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = u.name;
+    li.appendChild(nameSpan);
+
+    // Status
+    const statusSpan = document.createElement("span");
+    statusSpan.className = "status";
+    statusSpan.textContent = isEngaged ? " (Engaged)" : " (Available)";
+    li.appendChild(statusSpan);
+
+    // Mic status
+    const micSpan = document.createElement("span");
+    micSpan.className = "micStatus";
+    const micOn = userMicStates[u._id] ?? false;
+    if (isEngaged) {
+      micSpan.textContent = micOn ? " 🎤" : " 🔇";
+    }
     li.appendChild(micSpan);
+
+    // Drag handlers
+    li.addEventListener("dragstart", (e) => {
+      if (isEngaged) {
+        e.preventDefault();
+        return;
+      }
+      e.dataTransfer.setData("userId", u._id);
+      li.classList.add("dragging");
+    });
+
+    li.addEventListener("dragend", () => {
+      li.classList.remove("dragging");
+    });
+
     usersList.appendChild(li);
   });
 
-  // Update current user's mic state display if desired
-  updateMicStatusInList(currentUserId, userMicStates[currentUserId] ?? false);
+  updateRoomDisplay();
 }
 
-function createConnectButton(user) {
-  const btn = document.createElement("button");
-  btn.textContent = "Connect";
-  btn.className = "connectBtn";
-
-  btn.disabled = !!connectedUserId || user.engagedWith !== null;
-
-  btn.onclick = () => {
-    console.log("Connect button clicked for user:", user._id);
-
-    if (connectedUserId) {
-      alert("Already engaged in a conversation.");
-      return;
-    }
-    if (user.engagedWith) {
-      alert("User is engaged.");
-      return;
-    }
-
-    console.log("Emitting toggleMic to:", user._id);
-    socket.emit("toggleMic", user._id);
-  };
-
-  return btn;
-}
-
-function updateMicStatusInList(userId, micOn) {
-  const li = usersList.querySelector(`li[data-userid='${userId}']`);
-  if (!li) return;
-
-  let micSpan = li.querySelector(".micStatus");
-  if (!micSpan) {
-    micSpan = document.createElement("span");
-    micSpan.className = "micStatus";
-    li.appendChild(micSpan);
+function updateRoomDisplay() {
+  myRoomEl.innerHTML = "<h3>My Room (Drop users here)</h3>";
+  
+  if (myRoom.size === 0) {
+    const emptyMsg = document.createElement("p");
+    emptyMsg.textContent = "Drag users here to start a group chat";
+    emptyMsg.className = "empty-room-msg";
+    myRoomEl.appendChild(emptyMsg);
+  } else {
+    myRoom.forEach((userId) => {
+      const userDiv = document.createElement("div");
+      userDiv.className = "room-user";
+      userDiv.setAttribute("data-userid", userId);
+      
+      // Find user name from the user list or use stored info
+      const userLi = document.querySelector(`li[data-userid="${userId}"]`);
+      const userName = userLi ? userLi.querySelector("span").textContent : "User";
+      
+      userDiv.textContent = userName;
+      
+      const micOn = userMicStates[userId] ?? false;
+      const micIcon = document.createElement("span");
+      micIcon.textContent = micOn ? " 🎤" : " 🔇";
+      userDiv.appendChild(micIcon);
+      
+      const removeBtn = document.createElement("button");
+      removeBtn.textContent = "✕";
+      removeBtn.className = "remove-user-btn";
+      removeBtn.onclick = () => removeUserFromRoom(userId);
+      userDiv.appendChild(removeBtn);
+      
+      myRoomEl.appendChild(userDiv);
+    });
   }
+  
+  // Update leave button state
+  leaveRoomBtn.disabled = myRoom.size === 0;
+}
 
-  // Update text and classes
-  micSpan.textContent = micOn ? "🎤 Mic ON" : "🔇 Mic OFF";
-  micSpan.classList.toggle("activeMic", micOn);
-  micSpan.classList.toggle("inactiveMic", !micOn);
+function removeUserFromRoom(userId) {
+  console.log("Removing user from room:", userId);
+  socket.emit("removeUserFromRoom", userId);
+}
+
+function leaveRoom() {
+  console.log("Leaving room");
+  socket.emit("leaveRoom");
 }
 
 // ========================
@@ -246,145 +424,194 @@ function handleUserCreated(userId, name) {
   currentUserName = name;
 }
 
-async function handleConnectionRequested({ engagedWith }) {
-  console.log("Connection requested with:", engagedWith);
-  connectedUserId = engagedWith;
-  disconnect.disabled = false;
-
-  // Determine who is polite based on user IDs (string comparison is okay as long as consistent)
-  polite = currentUserId < engagedWith;
-  console.log("Polite role:", polite);
-
-  await startCall(engagedWith);
+async function handleUserAddedToRoom({ userId, initiator }) {
+  console.log("User added to room:", userId, "Initiator:", initiator);
+  myRoom.add(userId);
+  updateRoomDisplay();
+  
+  // Create peer connection - initiator creates offer
+  await createPeerConnectionForUser(userId, initiator);
 }
 
-function handleConnectionReleased() {
-  console.log("Connection released");
-  cleanupConnection();
+function handleUserRemovedFromRoom({ userId }) {
+  console.log("User removed from room:", userId);
+  myRoom.delete(userId);
+  closePeerConnection(userId);
+  updateRoomDisplay();
+  
+  // Remove audio element for this user
+  const audioEl = document.getElementById(`audio-${userId}`);
+  if (audioEl) {
+    audioEl.remove();
+  }
+}
+
+function handleRoomUpdated({ users }) {
+  console.log("Room updated with users:", users);
+  
+  // Update myRoom set
+  const newRoomSet = new Set(users);
+  
+  // Remove users no longer in room
+  for (const userId of myRoom) {
+    if (!newRoomSet.has(userId)) {
+      console.log("Removing user from room (room update):", userId);
+      closePeerConnection(userId);
+      const audioEl = document.getElementById(`audio-${userId}`);
+      if (audioEl) audioEl.remove();
+    }
+  }
+  
+  // Add new users
+  for (const userId of newRoomSet) {
+    if (!myRoom.has(userId) && userId !== currentUserId) {
+      console.log("Adding user to room (room update):", userId);
+      myRoom.add(userId);
+      // Don't initiate offer here, wait for userAddedToRoom event
+    }
+  }
+  
+  myRoom = newRoomSet;
+  updateRoomDisplay();
 }
 
 function handleMicStateChanged({ userId, micOn }) {
   console.log("Mic state changed:", userId, micOn);
   userMicStates[userId] = micOn;
-  updateMicStatusInList(userId, micOn);
+  updateRoomDisplay();
+  
+  // Update in user list if visible
+  const li = usersList.querySelector(`li[data-userid='${userId}']`);
+  if (li) {
+    const micSpan = li.querySelector(".micStatus");
+    if (micSpan) {
+      micSpan.textContent = micOn ? " 🎤" : " 🔇";
+    }
+  }
 }
 
 // ========================
 // 🔹 WEBRTC CORE LOGIC
 // ========================
 
-// Helper: trigger a negotiation (createOffer -> setLocalDescription -> send)
-async function maybeNegotiate() {
-  if (!pc || !connectedUserId) return;
-
-  // If we're already creating an offer, don't start another
-  if (isMakingOffer) {
-    console.log("Already making an offer; skipping maybeNegotiate");
+async function createPeerConnectionForUser(userId, shouldOffer) {
+  if (peerConnections[userId]) {
+    console.log("Peer connection already exists for:", userId);
     return;
   }
 
-  try {
-    console.log("maybeNegotiate: creating offer...");
-    isMakingOffer = true;
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    socket.emit("webrtcOffer", {
-      targetUserId: connectedUserId,
-      offer: pc.localDescription,
-    });
-  } catch (err) {
-    console.error("Error in maybeNegotiate:", err);
-  } finally {
-    isMakingOffer = false;
-  }
-}
-
-async function startCall(targetUserId) {
-  console.log("Starting call with:", targetUserId);
-  createPeerConnection();
-
-  // Only the impolite peer creates initial offer (polite waits for incoming offer)
-  if (!polite) {
-    try {
-      console.log("Creating initial offer (impolite peer)");
-      isMakingOffer = true;
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit("webrtcOffer", { targetUserId, offer: pc.localDescription });
-    } catch (err) {
-      console.error("Error creating offer:", err);
-    } finally {
-      isMakingOffer = false;
-    }
-  } else {
-    console.log("Polite peer: waiting for offer");
-  }
-}
-
-function createPeerConnection() {
-  if (pc) return;
-
-  pc = new RTCPeerConnection(iceServersConfig);
+  console.log("=== Creating peer connection for:", userId, "shouldOffer:", shouldOffer, "===");
+  
+  const pc = new RTCPeerConnection(iceServersConfig);
+  peerConnections[userId] = pc;
+  pendingCandidates[userId] = [];
 
   // Add local tracks if microphone is enabled
   if (localStream && isLocalMicEnabled) {
-    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+    console.log("Adding local stream tracks to new peer connection");
+    localStream.getTracks().forEach((track) => {
+      const sender = pc.addTrack(track, localStream);
+      console.log("Added track:", track.kind, "label:", track.label, "enabled:", track.enabled);
+    });
+  } else {
+    console.log("No local stream available or mic disabled");
   }
 
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) {
+      console.log("Sending ICE candidate to:", userId, "type:", candidate.type);
       socket.emit("webrtcCandidate", {
-        targetUserId: connectedUserId,
+        targetUserId: userId,
         candidate,
       });
+    } else {
+      console.log("ICE gathering complete for:", userId);
     }
   };
 
-  pc.ontrack = handleRemoteTrack;
-  pc.oniceconnectionstatechange = handleICEConnectionChange;
-
-  // Use onnegotiationneeded to follow perfect negotiation pattern and avoid races
-  pc.onnegotiationneeded = async () => {
-    console.log("onnegotiationneeded fired");
-    // If polite and an offer collision occurs, polite will wait and handle via handleOffer
-    if (isMakingOffer) {
-      console.log("Already making an offer; skipping onnegotiationneeded");
-      return;
+  pc.ontrack = (event) => {
+    console.log("=== ontrack fired for:", userId, "===");
+    handleRemoteTrack(event, userId);
+  };
+  
+  pc.oniceconnectionstatechange = () => {
+    console.log(`ICE connection state for ${userId}:`, pc.iceConnectionState);
+    if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+      console.log("✅ ICE connection established with:", userId);
     }
+    if (["failed", "disconnected", "closed"].includes(pc.iceConnectionState)) {
+      console.log("❌ ICE connection failed/disconnected for:", userId);
+      closePeerConnection(userId);
+    }
+  };
 
+  pc.onconnectionstatechange = () => {
+    console.log(`Connection state for ${userId}:`, pc.connectionState);
+    if (pc.connectionState === "connected") {
+      console.log("✅ Peer connection established with:", userId);
+    }
+  };
+  
+  pc.onsignalingstatechange = () => {
+    console.log(`Signaling state for ${userId}:`, pc.signalingState);
+  };
+
+  // Only initiator creates the offer
+  if (shouldOffer) {
+    console.log("Creating and sending initial offer to:", userId);
     try {
-      isMakingOffer = true;
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: false
+      });
+      
+      console.log("Offer created, setting local description");
       await pc.setLocalDescription(offer);
+      
+      console.log("Sending offer to:", userId);
       socket.emit("webrtcOffer", {
-        targetUserId: connectedUserId,
+        targetUserId: userId,
         offer: pc.localDescription,
       });
     } catch (err) {
-      console.error("Negotiationneeded error:", err);
-    } finally {
-      isMakingOffer = false;
+      console.error("Error creating initial offer:", err);
     }
-  };
-}
-
-function handleRemoteTrack(event) {
-  console.log("Remote track received");
-  // attach first stream
-  remoteAudio.srcObject = event.streams[0];
-}
-
-async function handleNegotiationNeeded() {
-  // not used; we use pc.onnegotiationneeded directly
-}
-
-// ICE state handling
-function handleICEConnectionChange() {
-  console.log("ICE connection state:", pc?.iceConnectionState);
-  if (!pc) return;
-  if (["failed", "disconnected", "closed"].includes(pc.iceConnectionState)) {
-    cleanupConnection();
+  } else {
+    console.log("Waiting for offer from:", userId);
   }
+}
+
+function handleRemoteTrack(event, userId) {
+  console.log("Remote track received from:", userId, "streams:", event.streams.length);
+  
+  let audioEl = document.getElementById(`audio-${userId}`);
+  if (!audioEl) {
+    audioEl = document.createElement("audio");
+    audioEl.id = `audio-${userId}`;
+    audioEl.autoplay = true;
+    audioEl.controls = true; // Add controls for debugging
+    remoteAudioContainer.appendChild(audioEl);
+    console.log("Created new audio element for:", userId);
+  }
+  
+  if (event.streams && event.streams[0]) {
+    audioEl.srcObject = event.streams[0];
+    console.log("Set srcObject for audio element, tracks:", event.streams[0].getTracks().length);
+  }
+}
+
+function closePeerConnection(userId) {
+  const pc = peerConnections[userId];
+  if (pc) {
+    console.log("Closing peer connection for:", userId);
+    try {
+      pc.close();
+    } catch (e) {
+      console.warn("Error closing peer connection:", e);
+    }
+    delete peerConnections[userId];
+  }
+  delete pendingCandidates[userId];
 }
 
 // ========================
@@ -392,124 +619,109 @@ function handleICEConnectionChange() {
 // ========================
 
 async function handleOffer({ fromUserId, offer }) {
-  console.log("Received offer from:", fromUserId);
-
-  // Offer collision detection
-  const offerCollision = isMakingOffer || pc?.signalingState !== "stable";
-  isIgnoringOffer = !polite && offerCollision;
-
-  console.log("Offer collision:", offerCollision, "Ignoring:", isIgnoringOffer, "Polite:", polite);
-
-  if (isIgnoringOffer) {
-    console.log("Ignoring offer due to collision");
+  console.log("=== Received offer from:", fromUserId, "===");
+  console.log("Offer type:", offer.type);
+  
+  // Create peer connection if it doesn't exist
+  if (!peerConnections[fromUserId]) {
+    console.log("Creating peer connection for incoming offer");
+    await createPeerConnectionForUser(fromUserId, false);
+  }
+  
+  const pc = peerConnections[fromUserId];
+  if (!pc) {
+    console.error("No peer connection for:", fromUserId);
     return;
   }
 
-  // If we don't have a connected user set, set it now
-  if (!connectedUserId) {
-    connectedUserId = fromUserId;
-    disconnect.disabled = false;
-    polite = currentUserId < fromUserId;
-    console.log("Setting polite role from offer:", polite);
-  }
-
-  createPeerConnection();
-
-  isSettingRemoteAnswerPending = true;
-
   try {
-    // setRemoteDesc handles rollback if needed
-    await setRemoteDesc(offer);
-
-    // Create an answer to the incoming offer
+    console.log("Current signaling state:", pc.signalingState);
+    console.log("Setting remote description (offer)");
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    console.log("Remote description set successfully");
+    
+    console.log("Creating answer");
     const answer = await pc.createAnswer();
+    console.log("Answer created, setting local description");
     await pc.setLocalDescription(answer);
-
+    
+    console.log("Sending answer to:", fromUserId);
     socket.emit("webrtcAnswer", {
       targetUserId: fromUserId,
       answer: pc.localDescription,
     });
+    
+    // Process pending candidates
+    await processPendingCandidates(fromUserId);
   } catch (err) {
     console.error("Error handling offer:", err);
-  } finally {
-    isSettingRemoteAnswerPending = false;
   }
 }
 
-async function handleAnswer({ answer }) {
-  console.log("Received answer");
+async function handleAnswer({ fromUserId, answer }) {
+  console.log("=== Received answer from:", fromUserId, "===");
+  console.log("Answer type:", answer.type);
+  
+  const pc = peerConnections[fromUserId];
+  if (!pc) {
+    console.warn("No peer connection for answer from:", fromUserId);
+    return;
+  }
+
   try {
-    isSettingRemoteAnswerPending = true;
-    if (!pc) {
-      console.warn("No peer connection while receiving answer");
-      return;
-    }
+    console.log("Current signaling state:", pc.signalingState);
+    console.log("Setting remote description (answer)");
     await pc.setRemoteDescription(new RTCSessionDescription(answer));
-    // After setting remote, process any pending candidates
-    await flushPendingCandidates();
+    console.log("Remote description (answer) set successfully");
+    
+    // Process pending candidates
+    await processPendingCandidates(fromUserId);
   } catch (err) {
     console.error("Error setting answer:", err);
-  } finally {
-    isSettingRemoteAnswerPending = false;
   }
 }
 
-async function handleCandidate({ candidate }) {
+async function handleCandidate({ fromUserId, candidate }) {
+  console.log("Received ICE candidate from:", fromUserId);
+  
+  const pc = peerConnections[fromUserId];
+  if (!pc) {
+    console.warn("No peer connection for candidate from:", fromUserId);
+    return;
+  }
+
   const iceCandidate = new RTCIceCandidate(candidate);
+  
   try {
-    // If pc and remoteDescription exist and ufrag matches, add immediately.
-    if (pc && pc.remoteDescription && candidateMatchesSDP(iceCandidate)) {
+    if (pc.remoteDescription && pc.remoteDescription.type) {
+      console.log("Adding ICE candidate immediately");
       await pc.addIceCandidate(iceCandidate);
     } else {
-      // otherwise queue until remote description is set
-      pendingCandidates.push(iceCandidate);
+      console.log("Queueing ICE candidate (no remote description yet)");
+      if (!pendingCandidates[fromUserId]) {
+        pendingCandidates[fromUserId] = [];
+      }
+      pendingCandidates[fromUserId].push(iceCandidate);
     }
   } catch (err) {
-    // Ignore Unknown ufrag errors (they'll be handled when SDPs are set)
-    if (!err.message || !err.message.includes("Unknown ufrag")) {
-      console.error("Error adding ICE candidate:", err);
-    }
+    console.error("Error adding ICE candidate:", err);
   }
 }
 
-function candidateMatchesSDP(candidate) {
-  const sdp = pc?.remoteDescription?.sdp;
-  if (!sdp) return false;
-  const match = /a=ice-ufrag:(\S+)/.exec(sdp);
-  if (!match) return false;
-  const ufrag = match[1];
-  // candidate.usernameFragment is the standardized property name for the candidate ufrag
-  return candidate.usernameFragment === ufrag;
-}
-
-async function flushPendingCandidates() {
-  if (!pc || !pc.remoteDescription) return;
-  for (const cand of pendingCandidates) {
-    try {
-      await pc.addIceCandidate(cand);
-    } catch (e) {
-      console.error("Candidate add error while flushing:", e);
+async function processPendingCandidates(userId) {
+  const pc = peerConnections[userId];
+  const candidates = pendingCandidates[userId] || [];
+  
+  if (candidates.length > 0) {
+    console.log(`Processing ${candidates.length} pending candidates for:`, userId);
+    for (const candidate of candidates) {
+      try {
+        await pc.addIceCandidate(candidate);
+      } catch (err) {
+        console.error("Error adding pending candidate:", err);
+      }
     }
-  }
-  pendingCandidates = [];
-}
-
-async function setRemoteDesc(desc) {
-  try {
-    // Only rollback if we're in have-local-offer and this is an offer
-    if (desc.type === "offer" && pc.signalingState === "have-local-offer") {
-      console.log("Rolling back local offer before setting remote offer");
-      await pc.setLocalDescription({ type: "rollback" });
-    }
-
-    // Accept either plain object or RTCSessionDescription
-    await pc.setRemoteDescription(new RTCSessionDescription(desc));
-    console.log("Remote description set successfully, signaling state:", pc.signalingState);
-
-    // After remote description set, flush queued ICE candidates
-    await flushPendingCandidates();
-  } catch (err) {
-    console.error("Failed setting remote description:", err);
+    pendingCandidates[userId] = [];
   }
 }
 
@@ -517,39 +729,29 @@ async function setRemoteDesc(desc) {
 // 🔹 CLEANUP
 // ========================
 
-function cleanupConnection() {
-  console.log("Cleaning up connection");
-  if (pc) {
-    try {
-      pc.close();
-    } catch (e) {
-      console.warn("Error closing pc:", e);
-    }
-    pc = null;
+function cleanupAllConnections() {
+  console.log("Cleaning up all connections");
+  
+  for (const userId of Object.keys(peerConnections)) {
+    closePeerConnection(userId);
   }
-
-  connectedUserId = null;
-  disconnect.disabled = true;
-
-  if (remoteAudio) {
-    remoteAudio.srcObject = null;
-  }
-
-  // Stop and clear local stream (but keep mic UI state as-is)
+  
+  myRoom.clear();
+  updateRoomDisplay();
+  
+  // Remove all remote audio elements
+  remoteAudioContainer.innerHTML = "";
+  
   if (localStream) {
-    try {
-      localStream.getTracks().forEach((t) => t.stop());
-    } catch (e) {
-      console.warn("Error stopping local tracks on cleanup:", e);
-    }
+    localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
+    isLocalMicEnabled = false;
+    updateLocalMicButton();
   }
-
-  // Reset negotiation flags to safe defaults
-  isMakingOffer = false;
-  isIgnoringOffer = false;
-  isSettingRemoteAnswerPending = false;
-  pendingCandidates = [];
-  isLocalMicEnabled = false;
-  updateLocalMicButton();
 }
+
+// Cleanup on page unload
+window.addEventListener("beforeunload", () => {
+  cleanupAllConnections();
+  socket.emit("leaveRoom");
+});
