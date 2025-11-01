@@ -325,7 +325,11 @@ io.on("connection", (socket) => {
           console.log(`Host ${hostUser._id} no longer engaged (room empty after disconnect)`);
         }
         
-        await hostUser.save();
+        try{
+          await hostUser.save();
+        }catch(e){
+          console.error("Error saving host user on disconnect:", e);
+        }
         
         io.to(hostUser._id.toString()).emit("userRemovedFromRoom", { 
           userId: currentUserId 
