@@ -2,7 +2,7 @@
  * Socket Event Handlers
  */
 
-import { state, setCurrentUser, addToRoom, removeFromRoom, clearRoom } from '../state/app-state.js';
+import { state } from '../state/app-state.js';
 import { renderUserList } from '../ui/user-list.js';
 import { updateRoomDisplay } from '../ui/room-display.js';
 import { showSimpleNotification } from '../ui/notifications.js';
@@ -18,7 +18,8 @@ export function setupSocketHandlers(socket) {
    */
   socket.on('userCreated', (userId, name) => {
     console.log('User created:', userId, name);
-    setCurrentUser(userId, name);
+    state.currentUserId = userId;
+    state.currentUserName = userName;
   });
   
   socket.on('userListUpdate', (users) => {
@@ -42,7 +43,7 @@ export function setupSocketHandlers(socket) {
    */
   socket.on('userAddedToRoom', async ({ userId, initiator }) => {
     console.log('User added to room:', userId, 'Initiator:', initiator);
-    addToRoom(userId);
+    state.myRoom.add(userId);
     updateRoomDisplay(socket);
 
     // Create peer connection - initiator creates offer
@@ -55,7 +56,7 @@ export function setupSocketHandlers(socket) {
    */
   socket.on('userRemovedFromRoom', ({ userId }) => {
     console.log('User removed from room:', userId);
-    removeFromRoom(userId);
+    state.myRoom.delete(userId);
     closePeerConnection(userId);
     updateRoomDisplay(socket);
   });
@@ -80,13 +81,13 @@ export function setupSocketHandlers(socket) {
     }
     
     // Update room set
-    clearRoom();
+    state.myRoom.clear();
 
     // Add new users
     users.forEach(userId => {
       if (userId !== state.currentUserId) {
         console.log("Adding user to room (room update):", userId);
-        addToRoom(userId);
+        state.myRoom.add(userId);
       }
     });
     

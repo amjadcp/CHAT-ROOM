@@ -54,33 +54,3 @@ export const state = {
   },
 };
 
-// Helper functions
-export function setCurrentUser(userId, userName) {
-  state.currentUserId = userId;
-  state.currentUserName = userName;
-}
-
-export function setLocalStream(stream) {
-  state.localStream = stream;
-}
-
-export function setPeerConnection(userId, pc) {
-  state.peerConnections[userId] = pc;
-}
-
-export function removePeerConnection(userId) {
-  delete state.peerConnections[userId];
-  delete state.pendingCandidates[userId];
-}
-
-export function addToRoom(userId) {
-  state.myRoom.add(userId);
-}
-
-export function removeFromRoom(userId) {
-  state.myRoom.delete(userId);
-}
-
-export function clearRoom() {
-  state.myRoom.clear();
-}

@@ -6,7 +6,7 @@
 // WEBRTC CORE - PEER CONNECTION CREATION
 // ============================================================================
 
-import { state, setPeerConnection, removePeerConnection } from '../state/app-state.js';
+import { state } from '../state/app-state.js';
 import { iceServersConfig } from '../config/webrtc-config.js';
 import { handleRemoteTrack } from './media-manager.js';
 import { createAndSendOffer } from './signaling.js';
@@ -45,7 +45,7 @@ export async function createPeerConnectionForUser(userId, shouldOffer, socket) {
   
   // Create new peer connection with ICE servers
   const pc = new RTCPeerConnection(iceServersConfig);
-  setPeerConnection(userId, pc);
+  state.peerConnections[userId] = pc;
   state.pendingCandidates[userId] = [];
 
   // Add local tracks if available
@@ -177,7 +177,9 @@ export function closePeerConnection(userId) {
     } catch (e) {
       console.warn("Error closing:", e);
     }
-    removePeerConnection(userId);
+    
+    delete state.peerConnections[userId];
+    delete state.pendingCandidates[userId];
   }
   
   const audioEl = document.getElementById(`audio-${userId}`);
