@@ -124,7 +124,7 @@ io.on("connection", (socket) => {
       return;
     }
     
-    // ✅ FIX: Mark current user as engaged if this is their first room member
+    // Mark current user as engaged if this is their first room member
     if (currentUser.myRoom.length === 0 && currentUser.inRoom === null) {
       currentUser.inRoom = currentUserId; // Mark as engaged in own room
       console.log(`Current user ${currentUserId} marked as engaged in their own room`);
@@ -186,7 +186,7 @@ io.on("connection", (socket) => {
     // Remove from current user's room
     currentUser.myRoom = currentUser.myRoom.filter(id => id !== targetUserId);
     
-    // ✅ FIX: Clear host's engaged status if room is now empty
+    // Clear host's engaged status if room is now empty
     if (currentUser.myRoom.length === 0) {
       currentUser.inRoom = null;
       console.log(`User ${currentUserId} no longer engaged (room empty)`);
@@ -229,7 +229,7 @@ io.on("connection", (socket) => {
       if (hostUser) {
         hostUser.myRoom = hostUser.myRoom.filter(id => id !== currentUserId);
         
-        // ✅ FIX: Clear host's status if their room is now empty
+        // Clear host's status if their room is now empty
         if (hostUser.myRoom.length === 0) {
           hostUser.inRoom = null;
           console.log(`Host ${hostUser._id} no longer engaged (room empty after member left)`);
@@ -266,7 +266,7 @@ io.on("connection", (socket) => {
       }
       
       currentUser.myRoom = [];
-      // ✅ FIX: Clear own engagement status
+      // Clear own engagement status
       currentUser.inRoom = null;
       console.log(`User ${currentUserId} no longer engaged (cleared their own room)`);
     }
@@ -319,7 +319,7 @@ io.on("connection", (socket) => {
       if (hostUser) {
         hostUser.myRoom = hostUser.myRoom.filter(id => id !== currentUserId);
         
-        // ✅ FIX: Clear host's status if their room is now empty
+        // Clear host's status if their room is now empty
         if (hostUser.myRoom.length === 0) {
           hostUser.inRoom = null;
           console.log(`Host ${hostUser._id} no longer engaged (room empty after disconnect)`);
