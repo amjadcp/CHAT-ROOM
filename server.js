@@ -42,12 +42,21 @@ async function broadcastUserList() {
   }
 }
 
-// Periodic cleanup of stale users (e.g. no activity >5 minutes)
+// Periodic cleanup of stale users
 setInterval(async () => {
   try {
-    const cutoff = new Date(Date.now() - 5 * 60 * 1000);
-    await User.deleteMany({ lastSeen: { $lt: cutoff } });
-    await broadcastUserList();
+    const userIds = await User.find({}).select("_id");
+    let isRemoved = false;
+    for (const { _id } of userIds) {
+      const room = io.sockets.adapter.rooms.get(_id.toString());
+      if (!room || room.size === 0) {
+        await User.findByIdAndDelete(_id);
+        console.log(`Cleaned up stale user: ${_id}`);
+        isRemoved = true;
+      }
+    }
+
+    if (isRemoved) await broadcastUserList();
   } catch (e) {
     console.error("Error cleaning stale users:", e);
   }
