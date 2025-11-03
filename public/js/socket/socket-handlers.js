@@ -19,7 +19,7 @@ export function setupSocketHandlers(socket) {
   socket.on('userCreated', (userId, name) => {
     console.log('User created:', userId, name);
     state.currentUserId = userId;
-    state.currentUserName = userName;
+    state.currentUserName = name;
   });
   
   socket.on('userListUpdate', (users) => {
