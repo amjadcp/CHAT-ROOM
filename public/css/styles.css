@@ -1,7 +1,6 @@
-/* ============================================
-   RESET & BASE STYLES
-   ============================================ */
-
+/* =========================
+   GLOBAL RESET & BASE
+========================= */
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
@@ -12,420 +11,202 @@ body {
   max-width: 1200px;
   margin: 0 auto;
   padding: 20px;
-  background-color: #f5f5f5;
+  background: #f5f5f5;
 }
 
-/* ============================================
-   TYPOGRAPHY
-   ============================================ */
-
 h2 {
-  color: #333;
-  font-size: 1.5rem;
-  margin: 0 0 15px 0;
+  font-size: 1.4rem;
+  margin-bottom: 12px;
+  color: #222;
 }
 
 h3 {
-  color: #555;
-  border-bottom: 2px solid #eee;
-  padding-bottom: 10px;
-  font-size: 1.1rem;
+  font-size: 1rem;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e4e4e4;
+  color: #444;
 }
 
-/* ============================================
-   LAYOUT CONTAINERS
-   ============================================ */
-
+/* =========================
+   LAYOUT
+========================= */
 .container {
   display: flex;
   gap: 20px;
   margin-top: 20px;
 }
 
-.left-panel {
+.left-panel, .right-panel {
   flex: 1;
-  background: white;
-  padding: 20px;
+  background: #fff;
   border-radius: 8px;
+  padding: 16px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
-.right-panel {
-  flex: 1;
-  background: white;
-  padding: 20px;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-/* ============================================
-   CONTROLS & BUTTONS
-   ============================================ */
-
+/* =========================
+   CONTROL BAR (Meet style)
+========================= */
 .controls {
-  margin-bottom: 20px;
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-button {
-  padding: 12px 20px;
-  border: none;
-  border-radius: 5px;
-  cursor: pointer;
-  font-size: 16px;
-  transition: all 0.3s;
-  touch-action: manipulation;
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
-  min-height: 44px; /* iOS recommended touch target */
-}
-
-button:hover:not(:disabled) {
-  opacity: 0.8;
-}
-
-button:active:not(:disabled) {
-  transform: scale(0.95);
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-#toggleLocalMicBtn {
-  background-color: #4caf50;
-  color: white;
-  flex: 1;
-  min-width: 120px;
-}
-
-#toggleLocalMicBtn.active {
-  background-color: #f44336;
-}
-
-#leaveRoom {
-  background-color: #ff9800;
-  color: white;
-  flex: 1;
-  min-width: 120px;
-}
-
-.remove-user-btn {
-  background-color: #f44336;
-  color: white;
-  padding: 8px 12px;
-  font-size: 14px;
-  border-radius: 3px;
-  min-height: 36px;
-  flex-shrink: 0;
-}
-
-/* ============================================
-   ROOM AREA
-   ============================================ */
-
-#myRoom {
-  min-height: 200px;
-  border: 3px dashed #ccc;
-  border-radius: 8px;
-  padding: 20px;
-  margin-bottom: 20px;
-  background-color: #fafafa;
-  transition: all 0.3s;
-  position: relative;
-}
-
-#myRoom.dragover {
-  border-color: #4caf50;
-  background-color: #e8f5e9;
-}
-
-#myRoom.touch-dragover {
-  border-color: #2196f3;
-  background-color: #e3f2fd;
-  border-style: solid;
-}
-
-#myRoom h3 {
-  margin-top: 0;
-  color: #666;
-  font-size: 1.1rem;
-}
-
-.empty-room-msg {
-  color: #999;
-  font-style: italic;
-  text-align: center;
-  font-size: 0.95rem;
-}
-
-.room-user {
-  background-color: #e3f2fd;
-  border: 2px solid #2196f3;
-  border-radius: 5px;
-  padding: 12px;
-  margin: 10px 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-/* ============================================
-   USER LIST & ITEMS
-   ============================================ */
-
-#usersList {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.user-item {
-  background-color: #f9f9f9;
-  border: 2px solid #ddd;
-  border-radius: 5px;
-  padding: 12px;
-  margin: 8px 0;
-  cursor: grab;
-  transition: all 0.3s;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  touch-action: none;
-  -webkit-user-select: none;
-  user-select: none;
-  position: relative;
-}
-
-.user-item:hover:not(.engaged) {
-  background-color: #e8f5e9;
-  border-color: #4caf50;
-}
-
-.user-item.dragging {
-  opacity: 0.5;
-  cursor: grabbing;
-}
-
-.user-item.touch-dragging {
-  opacity: 0.7;
-  transform: scale(1.05);
-  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
-  z-index: 1000;
   position: fixed;
-  pointer-events: none;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 14px;
+  padding: 12px 18px;
+  background: rgba(0,0,0,0.65);
+  border-radius: 40px;
+  backdrop-filter: blur(6px);
+  z-index: 1000;
 }
 
-.user-item.engaged {
-  background-color: #ffebee;
-  border-color: #f44336;
-  cursor: not-allowed;
-  opacity: 0.7;
+/* Base button style for control bar */
+.controls button {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  font-size: 22px;
+  color: white;
+  background: #3c4043;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: 0.25s;
 }
 
-.user-item .user-name {
-  flex: 1;
-  font-size: 1rem;
+.controls button:hover:not(:disabled) {
+  background: #5f6368;
+  transform: scale(1.07);
 }
 
-/* ============================================
-   STATUS INDICATORS
-   ============================================ */
-
-.status {
-  font-size: 0.85em;
-  color: #666;
-  white-space: nowrap;
+/* Mic button */
+#toggleLocalMicBtn {
+  background: #d93025 !important; /* red when unmutedmuted */
+}
+#toggleLocalMicBtn.active {
+  background: #654b49 !important; /* red when muted */
 }
 
-.engaged .status {
-  color: #f44336;
+/* Leave call button (oval) */
+#leaveRoom {
+  width: 120px;
+  border-radius: 50px;
+  background: #d93025;
+  font-size: 20px;
   font-weight: bold;
 }
 
-.micStatus {
-  margin-left: auto;
-  font-size: 1.2em;
-  flex-shrink: 0;
+#leaveRoom:hover:not(:disabled) {
+  background: #b9251c;
 }
 
-/* ============================================
-   AUDIO CONTAINER
-   ============================================ */
+/* Disabled state */
+.controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
-#remoteAudioContainer {
-  margin-top: 20px;
-  padding: 15px;
-  background-color: #f0f0f0;
-  border-radius: 5px;
+/* =========================
+   ROOM AREA
+========================= */
+#myRoom {
+  min-height: 150px;
+  border: 2px dashed #cfcfcf;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fafafa;
+  text-align: center;
+}
+
+.room-user,
+.user-item {
+  background: #f9f9f9;
   border: 1px solid #ddd;
+  padding: 10px;
+  margin-top: 8px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
-#remoteAudioContainer:empty {
-  display: none;
+.user-item {
+  cursor: grab;
 }
 
-#remoteAudioContainer audio {
-  width: 100%;
-  margin: 10px 0;
+.user-item.engaged {
+  background: #ffe5e5;
+  border-color: #ff6b6b;
+  opacity: 0.7;
 }
 
-/* ============================================
-   TOUCH INDICATOR
-   ============================================ */
-
-.touch-indicator {
-  position: fixed;
-  width: 60px;
-  height: 60px;
-  border: 3px solid #4caf50;
-  border-radius: 50%;
-  pointer-events: none;
-  z-index: 9999;
-  display: none;
-  background-color: rgba(76, 175, 80, 0.1);
-  transform: translate(-50%, -50%);
+/* Remove button */
+.remove-user-btn {
+  background: #e53935;
+  color: #fff;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
 }
 
-.touch-indicator.active {
-  display: block;
+/* =========================
+   AUDIO / STATUS
+========================= */
+#remoteAudioContainer {
+  margin-top: 16px;
+  padding: 10px;
+  background: #eee;
+  border-radius: 6px;
 }
 
-/* ============================================
-   ANIMATIONS
-   ============================================ */
-
-@keyframes slideIn {
-  from {
-    transform: translateX(400px);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
+.micStatus {
+  font-size: 1.1rem;
 }
 
-@keyframes slideOut {
-  from {
-    transform: translateX(0);
-    opacity: 1;
-  }
-  to {
-    transform: translateX(400px);
-    opacity: 0;
-  }
-}
-
-/* ============================================
-   MEDIA QUERIES - TABLET (768px and below)
-   ============================================ */
-
+/* =========================
+   RESPONSIVE
+========================= */
 @media (max-width: 768px) {
-  body {
-    padding: 10px;
-  }
-
-  h2 {
-    font-size: 1.3rem;
-  }
-
   .container {
     flex-direction: column;
-    gap: 15px;
   }
-
-  .left-panel,
-  .right-panel {
-    padding: 15px;
-  }
-
+  
   .controls {
-    gap: 8px;
+    bottom: 12px;
+    padding: 10px 14px;
+  }
+  
+  .controls button, #toggleLocalMicBtn, #leaveRoom {
+    width: 46px;
+    height: 46px;
+    font-size: 18px;
   }
 
-  button {
-    font-size: 15px;
-    padding: 10px 15px;
-  }
-
-  #myRoom {
-    min-height: 150px;
-    padding: 15px;
-  }
-
-  #myRoom h3 {
-    font-size: 1rem;
-  }
-
-  h3 {
-    font-size: 1rem;
-  }
-
-  .user-item {
-    padding: 10px;
-    font-size: 0.95rem;
-  }
-
-  .room-user {
-    padding: 10px;
-    font-size: 0.95rem;
-  }
-
-  .status {
-    font-size: 0.8em;
-  }
-
-  .micStatus {
-    font-size: 1.1em;
-  }
-
-  .remove-user-btn {
-    padding: 6px 10px;
-    font-size: 12px;
-  }
-
-  #remoteAudioContainer {
-    padding: 10px;
+  #leaveRoom {
+    width: 90px;
   }
 }
 
-/* ============================================
-   MEDIA QUERIES - MOBILE (480px and below)
-   ============================================ */
-
 @media (max-width: 480px) {
-  body {
-    padding: 8px;
+  body { padding: 10px; }
+
+  .controls {
+    bottom: 10px;
+    padding: 8px 12px;
   }
 
-  h2 {
-    font-size: 1.2rem;
+  .controls button, #leaveRoom {
+    width: 44px;
+    height: 44px;
+    font-size: 18px;
   }
 
-  .left-panel,
-  .right-panel {
-    padding: 12px;
-  }
-
-  button {
-    font-size: 14px;
-    padding: 10px 12px;
-  }
-
-  #myRoom {
-    min-height: 120px;
-    padding: 12px;
-  }
-
-  .user-item,
-  .room-user {
-    padding: 8px;
-    font-size: 0.9rem;
+  #leaveRoom {
+    width: 85px;
   }
 }

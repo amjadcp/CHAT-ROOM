@@ -2,6 +2,7 @@ import { state } from '../state/app-state.js';
 import { AUDIO_CONSTRAINTS } from '../config/webrtc-config.js';
 import { createAndSendOffer } from './signaling.js';
 import { showSimpleNotification } from '../ui/notifications.js';
+import { updateLocalMicButton } from '../ui/ui-handlers.js';
 
 // ============================================================================
 // MEDIA MANAGEMENT - LOCAL MICROPHONE
@@ -114,22 +115,6 @@ export function disableLocalMicrophone(socket) {
   socket.emit("micStateChanged", { userId: state.currentUserId, micOn: false });
   state.userMicStates[state.currentUserId] = false;
   updateLocalMicButton();
-}
-
-/**
- * Updates the microphone button appearance
- */
-function updateLocalMicButton() {
-  const btn = document.getElementById('toggleLocalMicBtn');
-  if (!btn) return;
-  
-  if (state.isLocalMicEnabled) {
-    btn.textContent = "🎤 Mute";
-    btn.classList.add("active");
-  } else {
-    btn.textContent = "🎤 Unmute";
-    btn.classList.remove("active");
-  }
 }
 
 // ============================================================================
